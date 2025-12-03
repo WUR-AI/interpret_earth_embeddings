@@ -319,7 +319,7 @@ def plot_sentinel(img, ax=None, eq_hist=False, clip_im=False):
     ax.set_xticks([])
     ax.set_yticks([])
 
-def plot_dw_landcover_from_hyp(hyp, fig=None, ax=None):
+def plot_dw_landcover_from_hyp(hyp, fig=None, ax=None, cax=None):
     lc = hyp[:9, ...]
     im = np.argmax(lc, axis=0) 
     if ax is None or fig is None:
@@ -329,7 +329,7 @@ def plot_dw_landcover_from_hyp(hyp, fig=None, ax=None):
     cmap_dw = ListedColormap([v for v in dict_classes.values()])
     im = ax.imshow(im, cmap=cmap_dw, interpolation='none', origin='upper', vmax=8.5, vmin=-0.5)
     # Place colorbar outside of ax to avoid shrinking the imshow
-    cbar = fig.colorbar(im, ax=ax, ticks=np.arange(0, 9), location='right', fraction=0.046, pad=0.04)
+    cbar = fig.colorbar(im, ax=ax, cax=cax, ticks=np.arange(0, 9), location='right', fraction=0.046, pad=0.04)
     cbar.ax.set_yticks(np.arange(0, 9))
     cbar.ax.set_yticklabels([k for k in dict_classes.keys()])
     ax.axis('off')
