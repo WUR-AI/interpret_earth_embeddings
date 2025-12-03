@@ -56,10 +56,10 @@ def gauss_2d(xy, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
                             + c*((y-yo)**2)))
     return g.ravel()
 
-def load_tuning_surfaces(base_dir='../outputs/radius10'):
-    all_stas = np.load(os.path.join(base_dir, 'sta_dat.npy'))
-    all_fits = np.load(os.path.join(base_dir, 'sta_fit.npy'))
-    all_params = np.load(os.path.join(base_dir, 'sta_par.npy'))
+def load_tuning_surfaces(base_dir='../outputs/radius10', affix='_2025-11-18-1711_mean'):
+    all_stas = np.load(os.path.join(base_dir, f'sta_dat{affix}.npy'))
+    all_fits = np.load(os.path.join(base_dir, f'sta_fit{affix}.npy'))
+    all_params = np.load(os.path.join(base_dir, f'sta_par{affix}.npy'))
     radius = int(base_dir.split('radius')[-1])
     return all_stas, all_fits, all_params, radius
 
@@ -114,7 +114,7 @@ def calculate_tuning_surfaces(hypotheses, features, radius=10,
     # Save as npy file
     if save_results:
         ts = du.create_timestamp()
-        np.save(os.path.join(base_dir, f'sta_dat-{ts}.npy'), all_stas)
+        np.save(os.path.join(base_dir, f'sta_dat_{ts}.npy'), all_stas)
     
     # Fit a gaussian to each sta
     if fit_gaussians:
@@ -169,7 +169,7 @@ def calculate_tuning_surfaces(hypotheses, features, radius=10,
 
         # Save as npy file
         if save_results:
-            np.save(os.path.join(base_dir, f'sta_fit-{ts}.npy'), all_fits)
+            np.save(os.path.join(base_dir, f'sta_fit_{ts}.npy'), all_fits)
             np.save(os.path.join(base_dir, f'sta_par_{ts}.npy'), all_params)
     else:
         all_fits = None
