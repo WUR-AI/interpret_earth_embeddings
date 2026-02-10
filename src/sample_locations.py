@@ -53,7 +53,7 @@ def random_points_in_polygons(gdf, n):
     return points
 
 
-def sample(n=10000, save_every=100, save_folder='/Users/tplas/data/'):
+def sample(n=10000, save_every=100, year=2024, save_folder='/Users/tplas/data/', buffer_m=50):
     countries = gpd.read_file('/Users/tplas/data/ne_110m_admin_0_countries/ne_110m_admin_0_countries.shp')
     points = random_points_in_polygons(countries, n)
     gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
@@ -61,10 +61,10 @@ def sample(n=10000, save_every=100, save_folder='/Users/tplas/data/'):
     majority_distribution = np.zeros(len(DW_CLASSES))
     results = {x: [] for x in ['lat', 'lon', 'label'] + DW_CLASSES}
     timestamp = du.create_timestamp()
-    name = f'dw_locations_{timestamp}'
+    name = f'dw_locations_{timestamp}_year-{year}'
     pbar = tqdm(total=len(coords), desc="Processing coordinates")
-    for it, (lon, lat) in enumerate(coords):
-        res = get_lc_from_coord(lat, lon)
+    for it, (lat, lon) in enumerate(coords):
+        res = get_lc_from_coord(lat, lon, year=year, buffer_m=buffer_m)
         if res is not None:
             probs = res[1]
             probs_mean = probs.mean(axis=0)
@@ -84,10 +84,10 @@ def sample(n=10000, save_every=100, save_folder='/Users/tplas/data/'):
         if (it + 1) % save_every == 0 or (it + 1) == len(coords):
             df = pd.DataFrame(results)
             n_samples = len(df)
-            save_path = os.path.join(save_folder, f'{name}_{n_samples}_samples.csv')
+            save_path = os.path.join(save_folder, f'{name}_{n_samples}-samples_{buffer_m}m.csv')
             df.to_csv(save_path, index=False)
 
     pbar.close()
 
 if __name__ == "__main__":
-    sample()
+    sample(year=2024)

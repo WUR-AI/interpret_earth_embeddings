@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd 
 # from dwca.read import DwCAReader
 import matplotlib.pyplot as plt
-# from matplotlib.colors import ListedColormap
+import matplotlib as mpl
+from matplotlib.colors import ListedColormap, LinearSegmentedColormap, to_rgb
 # import seaborn as sns 
 import shapely 
 import rasterio, rasterio.plot
@@ -24,6 +25,8 @@ from skimage import exposure
 import loadpaths
 path_dict = loadpaths.loadpaths()
 sys.path.append(os.path.join(path_dict['repo'], 'content/'))
+
+from sample_locations import DW_CLASSES
 
 ONLINE_ACCESS_TO_GEE = True 
 if ONLINE_ACCESS_TO_GEE:
@@ -67,6 +70,23 @@ def create_cmap_dynamic_world():
         'snow_and_ice': '#b39fe1'
     }
     return dict_classes
+
+def white_to_color_cmap(color, name="white_to_color"):
+    return LinearSegmentedColormap.from_list(
+        name,
+        [(1, 1, 1), to_rgb(color)],
+        N=256
+    )
+
+def create_mpl_cmap_dynamic_world():
+    dict_classes = create_cmap_dynamic_world()
+    cmap_per_class = {}
+    for i, (cls, color) in enumerate(dict_classes.items()):
+        cmap_per_class[cls] = white_to_color_cmap(color, name=f'{cls}_cmap')  # white to class color
+    cmap_all = [dict_classes[dw] for dw in DW_CLASSES]
+    cmap_all = ListedColormap(cmap_all)
+    
+    return {'individual': cmap_per_class, 'all': cmap_all}
 
 def get_hyp_names(include_dsm=True):
     color_dict_dw = create_cmap_dynamic_world()
