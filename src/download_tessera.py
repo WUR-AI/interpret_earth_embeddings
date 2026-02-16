@@ -99,7 +99,7 @@ def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
 
 
 def get_tessera_embeds(row: pd.Series, year: int, save_dir: str, tile_size: int, tessera_con: GeoTessera | None, ) -> None:
-    embed_tile_name = os.path.join(save_dir, f"{row.id}_tessera_y-{year}.tif")
+    embed_tile_name = os.path.join(save_dir, f"{row.row_id}_tessera_y-{year}.tif")
     if os.path.exists(embed_tile_name):
         return
 
@@ -172,6 +172,7 @@ def main(start, stop, root_dir, year=2024, tile_size=128):
     df = df[(df['random_sample'] == 1) | (df['lc_stratified_sample'] == 1)]
     df.reset_index(drop=True, inplace=True)
     df = df.iloc[start : min(stop, len(df)+1)]
+    df.rename(columns={'id': 'row_id'}, inplace=True)
 
     save_dir = os.path.join(root_dir, 'data', f'tessera_{year}')
     os.makedirs(save_dir, exist_ok=True)
@@ -185,9 +186,9 @@ def main(start, stop, root_dir, year=2024, tile_size=128):
         try:
             get_tessera_embeds(row, year, save_dir, tile_size, tessera_con=gt)
         except Exception as e:
-            print(f"{row.id} did not get embedded: {e}")
+            print(f"{row.row_id} did not get embedded: {e}")
             with open('data/tessera_skipped.txt', 'a' if os.path.exists('data/tessera_skipped.txt') else 'w') as f:
-                f.write(str(int(row.id)))
+                f.write(str(int(row.row_id)))
 
 
 if __name__ == "__main__":
