@@ -187,8 +187,9 @@ def main(start, stop, root_dir, year=2024, tile_size=128):
             get_tessera_embeds(row, year, save_dir, tile_size, tessera_con=gt)
         except Exception as e:
             print(f"{row.row_id} did not get embedded: {e}")
-            with open('data/tessera_skipped.txt', 'a' if os.path.exists('data/tessera_skipped.txt') else 'w') as f:
-                f.write(str(int(row.row_id)))
+            path = os.path.join(root_dir, 'data', 'tessera_skipped.txt')
+            with open(path, 'a' if os.path.exists(path) else 'w') as f:
+                f.write(str(int(row.row_id))+ '\n')
 
 
 if __name__ == "__main__":
