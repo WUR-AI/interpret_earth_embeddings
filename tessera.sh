@@ -4,7 +4,7 @@
 #SBATCH --error=logs/tessera_%A_%a.err
 #SBATCH --array=0-9
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
+#SBATCH --mem=16G
 #SBATCH --time=12:00:00
 
 # Activate environment
