@@ -1,39 +1,34 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=gee_download
-#SBATCH --output=logs/gee_%j.out
-#SBATCH --error=logs/gee_%j.err
-#SBATCH --cpus-per-task=10
-#SBATCH --mem=32G
+#SBATCH --job-name=tessera_download
+#SBATCH --output=logs/tessera_%A_%a.out
+#SBATCH --error=logs/tessera_%A_%a.err
+#SBATCH --array=0-9
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
 #SBATCH --time=12:00:00
-#SBATCH --partition=compute
 
 # Activate environment
 source ../aether/.venv/bin/activate
 
-N=20000
-P=$SLURM_CPUS_PER_TASK
+N=20000              # total points
+P=10                 # total array jobs
+TASK_ID=$SLURM_ARRAY_TASK_ID
+
 CHUNK=$((N / P))
 
-echo "Using $P processes"
+START=$((TASK_ID * CHUNK))
+END=$(( (TASK_ID + 1) * CHUNK ))
 
-for ((i=0; i<P; i++)); do
-    START=$((i * CHUNK))
-    END=$(( (i+1) * CHUNK ))
+# last task takes remainder
+if [ "$TASK_ID" -eq $((P - 1)) ]; then
+    END=$N
+fi
 
-    if [ $i -eq $((P-1)) ]; then
-        END=$N
-    fi
+echo "Task $TASK_ID processing $START -> $END"
 
-    echo "Launching $START -> $END"
-
-    srun --exclusive -N1 -n1 \
-        python -u download_gee_data.py \
-            --start $START \
-            --stop $END \
-            --root_dir /lustre/backup/SHARED/AIN/embed_interpret/ \
-            --year 2024 \
-            --size 128 &
-done
-
-wait
-echo "All workers finished."
+python -u src/download_tessera.py \
+        --start $START \
+        --stop $END \
+        --root_dir /lustre/backup/SHARED/AIN/embed_interpret/ \
+        --year 2024 \
+        --size 128
