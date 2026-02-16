@@ -57,18 +57,33 @@ def load_tiff(tiff_file_path, datatype='np', verbose=0):
             assert False, 'datatype should be np or da'
     return im
 
-def create_cmap_dynamic_world():
-    dict_classes = {
-        'water': '#419bdf',
-        'trees': '#397d49',
-        'grass': '#88b053',
-        'flooded_vegetation': '#7a87c6',
-        'crops': '#e49635',
-        'shrub_and_scrub': '#dfc35a',
-        'built': '#c4281b',
-        'bare': '#a59b8f',
-        'snow_and_ice': '#b39fe1'
-    }
+def create_cmap_dynamic_world(colorblind_friendly=True):
+    if colorblind_friendly:
+        dict_classes = {
+            'water': '#332288',
+            'trees': '#117733',
+            'grass': '#44aa99',
+            'flooded_vegetation': '#882255',
+            'crops': '#cc6677',
+            'shrub_and_scrub': '#999933',
+            'built': '#aa4499',
+            'bare': '#ddcc77',
+            'snow_and_ice': '#88ccee'
+        }
+
+        #CC6677', '#332288', '#DDCC77', '#117733', '#88CCEE', '#882255', '#44AA99', '#999933', '#AA4499'
+    else:
+        dict_classes = {
+            'water': '#419bdf',
+            'trees': '#397d49',
+            'grass': '#88b053',
+            'flooded_vegetation': '#7a87c6',
+            'crops': '#e49635',
+            'shrub_and_scrub': '#dfc35a',
+            'built': '#c4281b',
+            'bare': '#a59b8f',
+            'snow_and_ice': '#b39fe1'
+        }
     return dict_classes
 
 def white_to_color_cmap(color, name="white_to_color"):
@@ -125,6 +140,7 @@ def get_gee_image_from_point(coords, bool_buffer_in_deg=False, buffer_deg=0.01, 
     epsg_code = get_epsg_from_latlon(lat=lat, lon=lon)
 
     if bool_buffer_in_deg:  # not ideal https://gis.stackexchange.com/questions/304914/python-shapely-intersection-with-buffer-in-meter
+        assert False, 'WARNING: using buffer in degrees, which is not ideal for large latitudes.'
         print('WARNING: using buffer in degrees, which is not ideal for large latitudes.')
         point = shapely.geometry.Point(coords)
         polygon = point.buffer(buffer_deg, cap_style=3)  ## buffer in degrees
@@ -156,8 +172,8 @@ def get_gee_image_from_point(coords, bool_buffer_in_deg=False, buffer_deg=0.01, 
         ex_im_gee = ee.Image(ex_collection 
                             .filterBounds(aoi) 
                             .filterDate(ee.Date(f'{year}-01-01'), ee.Date(f'{year}-12-31')) 
-                            .first() 
-                            .reproject(f'EPSG:{epsg_code}')  
+                            .mosaic() 
+                            .reproject(f'EPSG:{epsg_code}', scale=10)  
                             .clip(aoi))
 
     elif image_collection == 'dynamicworld':
@@ -207,7 +223,7 @@ def get_gee_image_from_point(coords, bool_buffer_in_deg=False, buffer_deg=0.01, 
 
     im_dims = ex_im_gee.getInfo()["bands"][0]["dimensions"]
     
-    if im_dims[0] < threshold_size or im_dims[1] < threshold_size:
+    if threshold_size is not None and (im_dims[0] < threshold_size or im_dims[1] < threshold_size):
         print('WARNING: image too small, returning None')
         return None
     
@@ -278,7 +294,7 @@ def download_gee_image(coords, name: str, bool_buffer_in_deg=False, buffer_deg=0
         ## load & save to size correctly (because of buffer): 
         im = load_tiff(filepath, datatype='da')
         remove_if_too_small = True
-        desired_pixel_size = 128
+        desired_pixel_size = threshold_size if threshold_size is not None else 128
         
         if verbose:
             print('Original size: ', im.shape)
@@ -295,14 +311,16 @@ def download_gee_image(coords, name: str, bool_buffer_in_deg=False, buffer_deg=0
         assert im_crop.shape[0] == im.shape[0] and im_crop.shape[1] == desired_pixel_size and im_crop.shape[2] == desired_pixel_size, im_crop.shape
         if verbose:
             print('New size: ', im_crop.shape)
+        im_crop = im_crop.astype(np.float32)
         im_crop.rio.to_raster(filepath)
         im_gee = im_crop 
 
     return im_gee, filepath
 
-def download_list_coord(coord_list, path_save=None, bool_buffer_in_deg=False, buffer_deg=0.01, buffer_m=800,
+def download_list_coord(coord_list, name_list=None, path_save=None, bool_buffer_in_deg=False, buffer_deg=None, buffer_m=800,
                         name_group='sample', start_index=0, stop_index=None, resize_image=True, threshold_size=128,
-                        list_collections=['sentinel2', 'alphaearth', 'dynamicworld', 'worldclimbio', 'dsm']):
+                        list_collections=['sentinel2', 'alphaearth', 'dynamicworld', 'worldclimbio', 'dsm'],
+                        save_coords_json=True):
     assert type(coord_list) == list
     if path_save is None:
         path_save = path_dict['data_folder'] 
@@ -312,18 +330,24 @@ def download_list_coord(coord_list, path_save=None, bool_buffer_in_deg=False, bu
     else:
         print(f'WARNING: folder {path_save} already exists. OVERWRITING files!')
 
-    ## save list coords:
-    filename_coords = os.path.join(path_save, f'{name_group}_coords.json')
-    with open(filename_coords, 'w') as f:
-        json.dump(coord_list, f)
+    if save_coords_json:
+        filename_coords = os.path.join(path_save, f'{name_group}_coords.json')
+        with open(filename_coords, 'w') as f:
+            json.dump(coord_list, f)
 
     inds_none = []
+    if name_list is not None and len(name_list) != len(coord_list):
+        print('WARNING: name_list is not the same length as coord_list, ignoring name_list')
+        name_list = None
     for i, coords in enumerate(tqdm(coord_list)):
         if i < start_index:
             continue
         if stop_index is not None and i >= stop_index:
             break
-        name = f'{name_group}-{i}'
+        if name_list is not None and len(name_list) == len(coord_list):
+            name = name_list[i]
+        else:
+            name = f'{name_group}-{i}'
         for im_collection in list_collections:
             try:
                 im, path_im = download_gee_image(coords=coords, name=name, 
