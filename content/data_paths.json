@@ -9,9 +9,9 @@
   "tplas": 
     {"paths": {
       "home": "/Users/tplas/",
-      "repo": "/Users/tplas/repos/PECL/",
-      "model_folder": "/Users/tplas/models/PECL/",
-      "data_folder": "/Users/tplas/data/2025-10 neureo/sample/"
+      "repo": "/Users/tplas/repos/interpret_earth_embeddings/",
+      "model_folder": "/Users/tplas/models/interpret_earth_embeddings/",
+      "data_folder": "/Users/tplas/data/dw_sampled_locations/"
               }
     }
 }
