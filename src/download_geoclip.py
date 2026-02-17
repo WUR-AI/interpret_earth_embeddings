@@ -39,7 +39,9 @@ def main(root_dir):
         embed_df["id"] = df_sub["id"]
 
         save_path = os.path.join(root_dir, 'data', 'geoclip', f'{m}_geoclip.csv')
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         embed_df.to_csv(save_path, index=False)
+        print(f"Saved {save_path}")
 
 
 if __name__ == '__main__':
