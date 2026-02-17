@@ -1,6 +1,6 @@
 import os, sys 
 import argparse
-import data_utils as du
+import gee_utils as gu
 import pandas as pd 
 import numpy as np
 
@@ -20,13 +20,13 @@ def main(start=0, stop=2000):
     if stop > len(df_locations):
         print(f"Warning: stop index ({stop}) exceeds number of available locations ({len(df_locations)}). Adjusting stop to {len(df_locations)}.")
         stop = len(df_locations)
-    ## coords should be (lon, lat) for du.get_gee_image_from_point() 
+    ## coords should be (lon, lat) for gu.get_gee_image_from_point() 
 
     coords_list = [(row.lon, row.lat) for _, row in df_locations.iterrows()]
     name_list = df_locations.index.values
 
 
-    inds_none = du.download_list_coord(coord_list=coords_list, name_list=name_list, path_save=folder_save, bool_buffer_in_deg=False, buffer_deg=None, buffer_m=800,
+    inds_none = gu.download_list_coord(coord_list=coords_list, name_list=name_list, path_save=folder_save, bool_buffer_in_deg=False, buffer_deg=None, buffer_m=800,
                            name_group='2026-02-13-1659', start_index=start, stop_index=stop, resize_image=True, threshold_size=128,
                            list_collections=['alphaearth', 'dynamicworld', 'dsm'], save_coords_json=False)
     
