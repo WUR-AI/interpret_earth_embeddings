@@ -6,6 +6,7 @@ import matplotlib as mpl
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap, to_rgb
 import shapely 
 import rasterio, rasterio.plot
+import geopandas as gpd
 import xarray as xr
 import rioxarray as rxr
 import datetime
@@ -16,7 +17,7 @@ import loadpaths
 path_dict = loadpaths.loadpaths()
 sys.path.append(os.path.join(path_dict['repo'], 'content/'))
 
-from sample_locations import DW_CLASSES
+from constants import DW_CLASSES
 
 def load_tiff(tiff_file_path, datatype='np', verbose=0):
     '''Load tiff file as np or da'''
@@ -32,8 +33,6 @@ def load_tiff(tiff_file_path, datatype='np', verbose=0):
         else:
             assert False, 'datatype should be np or da'
     return im
-
-
 
 def create_cmap_dynamic_world(colorblind_friendly=True):
     if colorblind_friendly:
@@ -261,3 +260,52 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
         sentinel_eq = None
 
     return sentinel, sentinel_eq, features, hypotheses
+
+def get_modality_folders(parent_folder):
+    assert os.path.exists(parent_folder), parent_folder
+    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'worldclimbio', 'dsm', 
+                           'tessera', 'tessera_2024', 'geoclip', 'satclip']
+    contents = {}
+    df_points = None
+    for f in os.listdir(parent_folder):
+        if f in possible_modalities:
+            if f == 'tessera_2024' and 'tessera' not in contents:
+                name = 'tessera'
+            else: 
+                name = f
+            contents[name] = os.path.join(parent_folder, f)
+        elif f == '.DS_Store':
+            continue
+        elif f.startswith('dw_locations_') and f.endswith('.csv'):
+            if df_points is not None:
+                print(f'Warning: Multiple files starting with dw_locations_ found in {parent_folder}, skipping {f}.')
+                continue
+            df_points = pd.read_csv(os.path.join(parent_folder, f))
+        else:
+            print(f'Warning: {f} in {parent_folder} is not a recognised modality folder, skipping.')
+
+    return contents, df_points
+
+def get_list_complete_ids(parent_folder):
+    modality_folders, df_points = get_modality_folders(parent_folder)
+    list_ids_per_modality = {}
+    for modality, folder in modality_folders.items():
+        ids = set()
+        for f in os.listdir(folder):
+            if f.endswith('.tif') or f.endswith('.json'):
+                id = f.split('_')[0]
+                ids.add(int(id))
+        list_ids_per_modality[modality] = ids
+    complete_ids = set.intersection(*list_ids_per_modality.values())
+    complete_ids = np.sort(list(complete_ids))
+    if df_points is not None:
+        n_original = len(df_points)
+        df_points = df_points[df_points.id.isin(complete_ids)]
+        n_new = len(df_points)
+        if n_new < n_original:  
+            print(f'Warning: {n_original - n_new} rows were dropped from df_points because their id was not in the complete_ids set.')
+        for col in df_points.columns:
+            if col.endswith('_sample'):
+                print(f'Sample {col} has {np.sum(df_points[col])} data points out of {len(df_points)}.')
+
+    return complete_ids, modality_folders, df_points

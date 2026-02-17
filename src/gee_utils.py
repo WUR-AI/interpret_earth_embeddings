@@ -11,8 +11,8 @@ from skimage import exposure
 import loadpaths
 path_dict = loadpaths.loadpaths()
 sys.path.append(os.path.join(path_dict['repo'], 'content/'))
-from data_utils import load_tiff
-from sample_locations import DW_CLASSES
+import data_utils as du
+from constants import DW_CLASSES
 
 ONLINE_ACCESS_TO_GEE = True 
 if ONLINE_ACCESS_TO_GEE:
@@ -23,7 +23,6 @@ if ONLINE_ACCESS_TO_GEE:
     geemap.ee_initialize()
 else:
     print('WARNING: ONLINE_ACCESS_TO_GEE is set to False, so no access to GEE')
-
 
 def get_epsg_from_latlon(lat, lon):
     """Get the UTM EPSG code from latitude and longitude.
@@ -200,7 +199,7 @@ def download_gee_image(coords, name: str, bool_buffer_in_deg=False, buffer_deg=0
 
     if resize_image:
         ## load & save to size correctly (because of buffer): 
-        im = load_tiff(filepath, datatype='da')
+        im = du.load_tiff(filepath, datatype='da')
         remove_if_too_small = True
         desired_pixel_size = threshold_size if threshold_size is not None else 128
         

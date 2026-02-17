@@ -12,11 +12,7 @@ import ee, geemap
 import api_keys
 import data_utils as du
 import gee_utils as gu
-
-DW_CLASSES = [
-    "water", "trees", "grass", "flooded_vegetation",
-    "crops", "shrub_and_scrub", "built", "bare", "snow_and_ice",
-  ]
+from constants import DW_CLASSES
 
 def random_points_in_polygons(gdf, n):
     '''Sample random points within the given polygons.'''
