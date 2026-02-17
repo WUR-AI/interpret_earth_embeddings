@@ -30,5 +30,6 @@ python -u src/download_tessera.py \
         --start $START \
         --stop $END \
         --root_dir /lustre/backup/SHARED/AIN/embed_interpret/ \
+        --cache_dir /lustre/scratch/WUR/AIN/tijun001/tessera_cache \
         --year 2024 \
-        --size 128
+        --size 128 

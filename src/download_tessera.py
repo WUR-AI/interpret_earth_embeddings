@@ -47,7 +47,7 @@ def crs_to_pixel_coords(x, y, transform):
     return col, row
 
 
-def create_bbox_with_radius(lon: float, lat: float, radius: float, utm_crs: str = None, return_wgs: bool = False) -> shapely.geometry.Polygon:
+def create_bbox_with_radius(lon: float, lat: float, radius: float, utm_crs: str = None, return_wgs: bool = False, pad: int | None = None) -> shapely.geometry.Polygon:
     """Creates a square bounding box of given radius (meters) around lon/lat.
 
     :param lon: Longitude (EPSG:4326)
@@ -62,6 +62,9 @@ def create_bbox_with_radius(lon: float, lat: float, radius: float, utm_crs: str 
 
     to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
     x, y = to_utm.transform(lon, lat)
+
+    if pad:
+        radius = radius + pad
 
     # Create bbox in UTM
     square_utm = box(x - radius, y - radius, x + radius, y + radius)
@@ -109,7 +112,7 @@ def get_tessera_embeds(row: pd.Series, year: int, save_dir: str, tile_size: int,
 
     # Bounding box
     radius = math.ceil(tile_size / 2) + 10
-    bbox = create_bbox_with_radius(row.lon, row.lat, radius=radius, utm_crs=utm_crs, return_wgs=True)
+    bbox = create_bbox_with_radius(row.lon, row.lat, radius=radius, utm_crs=utm_crs, return_wgs=True, pad=1000)
 
     # Request to tessera
     tiles_to_fetch = tessera_con.registry.load_blocks_for_region(bounds=bbox.bounds, year=int(year))
@@ -164,7 +167,7 @@ def get_tessera_embeds(row: pd.Series, year: int, save_dir: str, tile_size: int,
     print(f"GeoTIFF saved as {embed_tile_name}")
 
 
-def main(start, stop, root_dir, year=2024, tile_size=128):
+def main(start, stop, root_dir, year=2024, tile_size=128, embed_cache=None):
     csv_path = os.path.join(root_dir, 'data', 'dw_locations_2026-02-13-1659_year-2024_50m_spherical_100k_random_stratified.csv')
     df = pd.read_csv(csv_path)
 
@@ -178,8 +181,11 @@ def main(start, stop, root_dir, year=2024, tile_size=128):
     os.makedirs(save_dir, exist_ok=True)
 
     # Tessera connection
-    cache_dir = os.path.join('data', 'cache', "tessera")
-    gt = GeoTessera(cache_dir=cache_dir)
+    cache_dir = os.path.join('../data', 'cache', "tessera")
+    if embed_cache is None:
+        embed_cache = cache_dir
+        
+    gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=embed_cache)
 
     # Shuffle for multi-proces downloading
     for row in df.itertuples():
@@ -198,9 +204,10 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=int, required=True)
     parser.add_argument("--stop", type=int, required=True)
     parser.add_argument("--root_dir", type=str, required=True, help="Root directory path.")
+    parser.add_argument("--cache_dir", type=str, required=True, help="Directory to store embed cache (requires large storage limit).")
     parser.add_argument("--year", type=int, default=2024, help="Year (default: 2024).")
     parser.add_argument("--size", type=int, default=128, help="Image size (default: 128).")
 
     args = parser.parse_args()
     print(f"Starting download of tessera data for locations from index {args.start} to {args.stop}...")
-    main(start=args.start, stop=args.stop, root_dir=args.root_dir, year=args.year, tile_size=args.size)
+    main(start=args.start, stop=args.stop, root_dir=args.root_dir, year=args.year, tile_size=args.size, embed_cache=args.cache_dir)
