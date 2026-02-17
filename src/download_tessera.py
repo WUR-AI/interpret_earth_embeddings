@@ -6,6 +6,7 @@ from shapely.geometry import box
 from shapely.ops import transform
 import math
 import os
+import numpy as np
 import pandas as pd
 import rasterio
 from rasterio import MemoryFile
@@ -13,6 +14,8 @@ from rasterio.merge import merge
 from rasterio.crs import CRS
 from rasterio.transform import Affine
 from rasterio.warp import Resampling, calculate_default_transform, reproject
+import time
+from typing import Any
 
 
 def get_point_utm_crs(lon: float, lat: float) -> str:
@@ -101,7 +104,13 @@ def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
     return dst, memfile
 
 
-def get_tessera_embeds(row: pd.Series, year: int, save_dir: str, tile_size: int, tessera_con: GeoTessera | None, ) -> None:
+def get_tessera_embeds(
+    row: pd.Series,
+    year: int,
+    save_dir: str,
+    tile_size: int,
+    tessera_con: GeoTessera | None
+    ) -> None:
     embed_tile_name = os.path.join(save_dir, f"{row.row_id}_tessera_y-{year}.tif")
     if os.path.exists(embed_tile_name):
         return
@@ -174,8 +183,32 @@ def main(start, stop, root_dir, year=2024, tile_size=128, embed_cache=None):
     # Subset for process
     df = df[(df['random_sample'] == 1) | (df['lc_stratified_sample'] == 1)]
     df.reset_index(drop=True, inplace=True)
-    df = df.iloc[start : min(stop, len(df)+1)]
+
+    # Unique grid id
+    df["grid_x"] = np.floor((df["lon"] + 180) / 20).astype(int)
+    df["grid_y"] = np.floor((df["lat"] + 90) / 20).astype(int)
+    df["grid_id"] = df["grid_x"].astype(str) + "_" + df["grid_y"].astype(str)
+    df = df.sort_values(["grid_y", "grid_x"]).reset_index(drop=True)
+
+    total = len(df)
+    task_id_env = os.environ.get("SLURM_ARRAY_TASK_ID")
+    task_count_env = os.environ.get("SLURM_ARRAY_TASK_COUNT")
+
+    if task_id_env is not None and task_count_env is not None:
+        task_id = int(task_id_env)
+        task_count = int(task_count_env)
+        chunk = int(math.ceil(total / task_count)) if task_count > 0 else total
+        start_idx = task_id * chunk
+        stop_idx = min((task_id + 1) * chunk, total)
+    else:
+        # Fallback to explicit start/stop indices (e.g. when run locally)
+        start_idx = start
+        stop_idx = min(stop, total)
+
+    df = df.iloc[start_idx:stop_idx]
     df.rename(columns={'id': 'row_id'}, inplace=True)
+    print(f"Processing {len(df)} locations")
+    print(f"Start index: {df.row_id.iloc[0]}, Stop index: {df.row_id.iloc[-1]}")
 
     save_dir = os.path.join(root_dir, 'data', f'tessera_{year}')
     os.makedirs(save_dir, exist_ok=True)
@@ -193,9 +226,10 @@ def main(start, stop, root_dir, year=2024, tile_size=128, embed_cache=None):
             get_tessera_embeds(row, year, save_dir, tile_size, tessera_con=gt)
         except Exception as e:
             print(f"{row.row_id} did not get embedded: {e}")
-            path = os.path.join(root_dir, 'data', 'tessera_skipped.txt')
-            with open(path, 'a' if os.path.exists(path) else 'w') as f:
-                f.write(str(int(row.row_id))+ '\n')
+            path = os.path.join(root_dir, 'data', f'tessera_skipped_{start}_{stop}.txt')
+            with open(path, 'a') as f:
+                f.write(f"{row.row_id}\n")
+
 
 
 if __name__ == "__main__":
