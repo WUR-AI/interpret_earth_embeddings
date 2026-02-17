@@ -17,7 +17,7 @@ def main(root_dir):
     encoder.eval()
 
     # Subset df per sampling str
-    modes = {'random_sample': None, 'lc_stratified_sample': None}
+    modes = ['random_sample', 'lc_stratified_sample']
     for m in modes:
         df_sub = df[df[m] == 1].reset_index(drop=True)
 
