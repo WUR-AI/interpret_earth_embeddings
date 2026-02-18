@@ -102,12 +102,13 @@ def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
 
 
 def get_tessera_embeds(
-    row: pd.Series,
-    year: int,
-    save_dir: str,
-    tile_size: int,
-    tessera_con: GeoTessera | None,
-    padding: int = 10
+        row: pd.Series,
+        year: int,
+        save_dir: str,
+        tile_size: int,
+        tessera_con: GeoTessera | None,
+        padding: int = 10,
+        retry: bool = False,
     ) -> None:
     embed_tile_name = os.path.join(save_dir, f"{row.row_id}_tessera_y-{year}.tif")
     if os.path.exists(embed_tile_name):
@@ -123,6 +124,8 @@ def get_tessera_embeds(
 
     # Request to tessera
     tiles_to_fetch = tessera_con.registry.load_blocks_for_region(bounds=bbox.bounds, year=int(year))
+    if len(tiles_to_fetch) == 0:
+        raise EnvironmentError(f"No tiles found for {row.row_id}")
 
     # Mosaic returned tiles for the bbox
     tiles = []
@@ -152,12 +155,15 @@ def get_tessera_embeds(
         mf.close()
 
     # Crop patch tile
-    col, row = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
+    c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
     half = tile_size // 2
-    row_min = row - half
-    row_max = row + half
-    col_min = col - half
-    col_max = col + half
+    row_min = r - half
+    row_max = r + half
+    col_min = c - half
+    col_max = c + half
+    if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0) and retry:
+        get_tessera_embeds(row, year, save_dir, tile_size, tessera_con=tessera_con, padding=1000)
+        return
     crop = mosaic[row_min:row_max, col_min:col_max, :]
 
     # Save array
@@ -227,11 +233,13 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
 
     df = df.iloc[start_idx:stop_idx]
     df.rename(columns={'id': 'row_id'}, inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
     print(f"Processing {len(df)} locations")
 
     # Tessera connection        
-    cache_dir = os.makedirs(os.path.join(cache_root, 'tessera_cache'), exist_ok=True)
+    cache_dir = os.path.join(cache_root, 'tessera_cache')
+    os.makedirs(cache_dir, exist_ok=True)
     gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=cache_dir)
 
     fast_save_dir = os.path.join(cache_root, 'tessera_data', f'tessera_{year}')
@@ -240,16 +248,12 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     # Download
     for row in df.itertuples():
         try:
-            get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt)
+            get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt, retry=True)
         except Exception as e:
-            try:
-                get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt, padding=1000)
-            except Exception as e:
-                print(f"{row.row_id} did not get embedded: {e}")
-                path = os.path.join('logs', f'tessera_skipped_{start}_{stop}.txt')
-                with open(path, 'a') as f:
-                    f.write(f"{row.row_id} because {e}\n")
-
+            print(f"{row.row_id} did not get embedded: {e}")
+            path = os.path.join('logs', f'tessera_skipped_{start}.txt')
+            with open(path, 'a') as f:
+                f.write(f"{row.row_id} because {e}\n")
 
 
 if __name__ == "__main__":
