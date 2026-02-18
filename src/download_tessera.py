@@ -100,6 +100,47 @@ def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
         reproject(source=rasterio.band(src_raster, i), destination=rasterio.band(dst, i), src_transform=src_raster.transform, src_crs=src_raster.crs, dst_transform=transform, dst_crs=dst_crs, resampling=Resampling.nearest, )
     return dst, memfile
 
+def fetch_files_manually(
+    bounds: tuple[float, float, float, float],
+    year: int,
+    padding_tiles: int = 1,
+) -> list[tuple[int, float, float]]:
+    """Compute tessera tile IDs (year, lon, lat) for a bbox with optional padding.
+
+    GeoTessera uses 0.1°×0.1° tiles centered at 0.05° offsets (e.g. -123.75, 50.15).
+    Use padding_tiles to add extra rows/cols so the mosaic extends beyond the crop region
+    (e.g. when r_min < 0 because the center point is near a tile edge).
+
+    Args:
+        bounds: (minx, miny, maxx, maxy) in WGS84
+        year: Year of embeddings
+        padding_tiles: Extra tile rows/cols to add on each side (default 2)
+
+    Returns:
+        List of (year, tile_lon, tile_lat) tuples. These can be passed to
+        tessera_con.fetch_embeddings(). Filter by registry if needed:
+        tiles = [t for t in bbox_to_tiles(...) if registry has t].
+    """
+    minx, miny, maxx, maxy = bounds
+    expand = padding_tiles * 0.1  # 0.1° per tile
+    minx = minx - expand
+    miny = miny - expand
+    maxx = maxx + expand
+    maxy = maxy + expand
+
+    # Tile centers at 0.05 + k*0.1 (geotessera convention)
+    tiles = []
+    tile_lon = np.floor(minx * 10) / 10 + 0.05
+    while tile_lon <= maxx + 1e-9:
+        tile_lat = np.floor(miny * 10) / 10 + 0.05
+        while tile_lat <= maxy + 1e-9:
+            tiles.append(
+                (int(year), float(round(tile_lon, 2)), float(round(tile_lat, 2)))
+            )
+            tile_lat += 0.1
+        tile_lon += 0.1
+    return tiles
+
 
 def get_tessera_embeds(
         row: pd.Series,
@@ -127,6 +168,49 @@ def get_tessera_embeds(
     if len(tiles_to_fetch) == 0:
         raise EnvironmentError(f"No tiles found for {row.row_id}")
 
+    mosaic, mosaic_transform = mosaic_tessera_tiles(tessera_con, tiles_to_fetch, utm_crs)
+
+    # Crop patch tile
+    c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
+    half = tile_size // 2
+    row_min = r - half
+    row_max = r + half
+    col_min = c - half
+    col_max = c + half
+
+    if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0):
+        if retry:
+            # Fetch neighboring tiles
+            tiles_to_fetch = fetch_files_manually(bbox.bounds, int(year))
+            mosaic, mosaic_transform = mosaic_tessera_tiles(tessera_con, tiles_to_fetch, utm_crs)
+
+            # Crop patch tile
+            c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
+            half = tile_size // 2
+            row_min = r - half
+            row_max = r + half
+            col_min = c - half
+            col_max = c + half
+        else:
+            raise ValueError(f"Out of range for {row.row_id}")
+    crop = mosaic[row_min:row_max, col_min:col_max, :]
+
+    # Save array
+    os.makedirs(save_dir, exist_ok=True)
+
+    crop_transform = mosaic_transform * Affine.translation(col_min, row_min)
+
+    height, width, channels = crop.shape
+
+    with rasterio.open(embed_tile_name, "w", driver="GTiff", height=height, width=width, count=channels, dtype=crop.dtype, crs=utm_crs, transform=crop_transform, ) as dst:
+        for i in range(channels):
+            dst.write(crop[:, :, i], i + 1)
+
+    print(f"GeoTIFF saved as {embed_tile_name}")
+
+
+def mosaic_tessera_tiles(tessera_con: GeoTessera | None, tiles_to_fetch: list[tuple[int, float, float]],
+                         utm_crs: str) -> tuple[Any, Any]:
     # Mosaic returned tiles for the bbox
     tiles = []
     memfiles = []
@@ -153,31 +237,7 @@ def get_tessera_embeds(
         tile.close()
     for mf in memfiles:
         mf.close()
-
-    # Crop patch tile
-    c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
-    half = tile_size // 2
-    row_min = r - half
-    row_max = r + half
-    col_min = c - half
-    col_max = c + half
-    if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0) and retry:
-        get_tessera_embeds(row, year, save_dir, tile_size, tessera_con=tessera_con, padding=1000)
-        return
-    crop = mosaic[row_min:row_max, col_min:col_max, :]
-
-    # Save array
-    os.makedirs(save_dir, exist_ok=True)
-
-    crop_transform = mosaic_transform * Affine.translation(col_min, row_min)
-
-    height, width, channels = crop.shape
-
-    with rasterio.open(embed_tile_name, "w", driver="GTiff", height=height, width=width, count=channels, dtype=crop.dtype, crs=utm_crs, transform=crop_transform, ) as dst:
-        for i in range(channels):
-            dst.write(crop[:, :, i], i + 1)
-
-    print(f"GeoTIFF saved as {embed_tile_name}")
+    return mosaic, mosaic_transform
 
 
 def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
