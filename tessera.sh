@@ -2,7 +2,7 @@
 #SBATCH --job-name=tessera_download
 #SBATCH --output=logs/tessera_%A_%a.out
 #SBATCH --error=logs/tessera_%A_%a.err
-#SBATCH --array=0-9
+##SBATCH --array=0-9
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=12:00:00
@@ -11,7 +11,7 @@
 source ../aether/.venv/bin/activate
 
 N=190000             
-P=10            
+P=1            
 TASK_ID=$SLURM_ARRAY_TASK_ID
 
 CHUNK=$((N / P))
@@ -33,4 +33,4 @@ python -u src/download_tessera.py \
         --size 128 
 
 
-cp  /lustre/scratch/WUR/AIN/tijun001/tessera_data/data/tessera_2024/*.tif /lustre/backup/SHARED/AIN/embed_interpret/data/tessera_2024/
+mv  /lustre/scratch/WUR/AIN/tijun001/tessera_data/tessera_2024/*.tif /lustre/backup/SHARED/AIN/embed_interpret/data/tessera_2024/
