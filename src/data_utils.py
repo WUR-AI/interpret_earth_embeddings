@@ -1,16 +1,11 @@
 import os, sys, json 
 import numpy as np 
 import pandas as pd 
-import matplotlib.pyplot as plt
-import matplotlib as mpl
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap, to_rgb
-import shapely 
-import rasterio, rasterio.plot
-import geopandas as gpd
+import rasterio
 import xarray as xr
 import rioxarray as rxr
 import datetime
-import utm 
 from tqdm import tqdm, trange
 from skimage import exposure
 import loadpaths
@@ -374,3 +369,4 @@ def create_csv_with_points_from_patches(parent_folder, modalities=['tessera', 'a
                 print(f'Warning: {save_path} already exists, skipping saving for {m} {sample}.')
                 continue
             df_tmp.to_csv(save_path, index=False)
+
