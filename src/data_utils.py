@@ -7,7 +7,7 @@ import xarray as xr
 import rioxarray as rxr
 import datetime
 from tqdm import tqdm, trange
-from skimage import exposure
+# from skimage import exposure
 import loadpaths
 path_dict = loadpaths.loadpaths()
 sys.path.append(os.path.join(path_dict['repo'], 'content/'))
@@ -247,8 +247,8 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
         sentinel_eq = sentinel_eq[:3, ...]
         # sentinel_eq = np.swapaxes(np.swapaxes(sentinel_eq, 1, 3), 1, 2)
         sentinel_eq = sentinel_eq.reshape([3, sentinel_eq.shape[1], -1])
-        # # sentinel_eq = np.clip(sentinel_eq, 0, 3000) / 3000
-        sentinel_eq = exposure.equalize_hist(sentinel_eq)
+        sentinel_eq = np.clip(sentinel_eq, 0, 2000) / 2000
+        # sentinel_eq = exposure.equalize_hist(sentinel_eq)
         sentinel_eq = sentinel_eq.reshape([3, sentinel_eq.shape[1], sentinel_eq.shape[1], -1])
         sentinel_eq = [sentinel_eq[:, :, :, i] for i in range(sentinel_eq.shape[-1])]
     else:
@@ -344,10 +344,16 @@ def create_csv_with_points_from_patches(parent_folder, modalities=['tessera', 'a
                 continue 
             if id not in gdf_points.id.values:
                 continue
-            im = load_tiff(os.path.join(folder, f), datatype='np')
+            try:
+                im = load_tiff(os.path.join(folder, f), datatype='np')
+            except Exception as e:
+                print(f'Error loading {f}: {e}')
+                continue
             bool_random = gdf_points[gdf_points.id == id]['random_sample'].values[0]
             bool_strat = gdf_points[gdf_points.id == id]['lc_stratified_sample'].values[0]
-
+            if im.shape[0] != n_dim or im.shape[1] != patch_size or im.shape[2] != patch_size:
+                print(f'Warning: {f} has shape {im.shape}, expected ({n_dim}, {patch_size}, {patch_size}), skipping.')
+                continue
             val = im[:, y, x]
             results['id'].append(id)
             results['pix_x'].append(x)
