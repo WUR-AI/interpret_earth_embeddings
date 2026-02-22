@@ -262,6 +262,7 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
     return sentinel, sentinel_eq, features, hypotheses
 
 def get_modality_folders(parent_folder):
+    '''Finds all recognised modality folders and load the points csv if it exists.'''
     assert os.path.exists(parent_folder), parent_folder
     possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'worldclimbio', 'dsm', 
                            'tessera', 'tessera_2024', 'geoclip', 'satclip']
@@ -287,14 +288,21 @@ def get_modality_folders(parent_folder):
     return contents, df_points
 
 def get_list_complete_ids(parent_folder):
+    '''Finds the complete list of ids that have all modalities available, and returns the modality folders and (filtered) points dataframe if it exists.'''
     modality_folders, df_points = get_modality_folders(parent_folder)
     list_ids_per_modality = {}
     for modality, folder in modality_folders.items():
         ids = set()
-        for f in os.listdir(folder):
-            if f.endswith('.tif') or f.endswith('.json'):
-                id = f.split('_')[0]
-                ids.add(int(id))
+        if modality in ['satclip', 'geoclip']:
+            csv_files = [x for x in os.listdir(folder) if x.endswith('.csv')]
+            for f in csv_files:
+                tmp = pd.read_csv(os.path.join(folder, f))
+                ids = ids.union(set(tmp.id.values))
+        else:
+            for f in os.listdir(folder):
+                if f.endswith('.tif') or f.endswith('.json'):
+                    id = f.split('_')[0]
+                    ids.add(int(id))
         list_ids_per_modality[modality] = ids
     complete_ids = set.intersection(*list_ids_per_modality.values())
     complete_ids = np.sort(list(complete_ids))
@@ -309,3 +317,60 @@ def get_list_complete_ids(parent_folder):
                 print(f'Sample {col} has {np.sum(df_points[col])} data points out of {len(df_points)}.')
 
     return complete_ids, modality_folders, df_points
+
+def create_csv_with_points_from_patches(parent_folder, modalities=['tessera', 'alphaearth'], verbose=1):
+    list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
+    if gdf_points is None or len(gdf_points) == 0:
+        if verbose:
+            print(f'No points dataframe found in {parent_folder}, creating a new one with all ids that have complete modalities: {modalities}')
+        return None
+    for m in modalities:
+        if m not in modality_folders:
+            print(f'Warning: Modality {m} not found in {parent_folder}, skipping.')
+            continue
+        folder = modality_folders[m]
+    
+        if verbose:
+            print(f'Processing modality {m} in folder {folder} with {len(list_ids)} complete ids.')
+        if m == 'tessera' or m == 'tessera_2024':
+            patch_size = 128
+            n_dim = 128
+        elif m == 'alphaearth':
+            patch_size = 128
+            n_dim = 64
+        emb_cols = [f'emb_{d}' for d in range(n_dim)]
+        cols = ['id','pix_x', 'pix_y', 'random_sample', 'lc_stratified_sample'] + emb_cols
+        results = {x: [] for x in cols}
+        x, y = patch_size // 2, patch_size // 2
+        for f in tqdm(os.listdir(folder)):
+            if f.endswith('.tif') or f.endswith('.json'):
+                id = int(f.split('_')[0])
+            else:
+                continue 
+            if id not in gdf_points.id.values:
+                continue
+            im = load_tiff(os.path.join(folder, f), datatype='np')
+            bool_random = gdf_points[gdf_points.id == id]['random_sample'].values[0]
+            bool_strat = gdf_points[gdf_points.id == id]['lc_stratified_sample'].values[0]
+
+            val = im[:, y, x]
+            results['id'].append(id)
+            results['pix_x'].append(x)
+            results['pix_y'].append(y)
+            results['random_sample'].append(bool_random)
+            results['lc_stratified_sample'].append(bool_strat)
+            for d in range(n_dim):
+                results[f'emb_{d}'].append(val[d])
+
+        df_result = pd.DataFrame(results)
+        for sample in ['random_sample', 'lc_stratified_sample']:
+            df_tmp = df_result[df_result[sample] == True]
+            df_tmp = df_tmp[emb_cols + ['id']]
+            df_tmp.reset_index(drop=True, inplace=True)
+            save_folder = os.path.join(parent_folder, f'{m}_centre')
+            os.makedirs(save_folder, exist_ok=True)
+            save_path = os.path.join(save_folder, f'{m}_centre_{sample}.csv')
+            if os.path.exists(save_path):
+                print(f'Warning: {save_path} already exists, skipping saving for {m} {sample}.')
+                continue
+            df_tmp.to_csv(save_path, index=False)
