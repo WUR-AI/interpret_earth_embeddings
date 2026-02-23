@@ -370,9 +370,26 @@ def create_csv_with_points_from_patches(parent_folder, modalities=['tessera', 'a
             df_tmp.reset_index(drop=True, inplace=True)
             save_folder = os.path.join(parent_folder, f'{m}_centre')
             os.makedirs(save_folder, exist_ok=True)
-            save_path = os.path.join(save_folder, f'{m}_centre_{sample}.csv')
+            save_path = os.path.join(save_folder, f'{sample}_{m}_centre.csv')
             if os.path.exists(save_path):
                 print(f'Warning: {save_path} already exists, skipping saving for {m} {sample}.')
                 continue
             df_tmp.to_csv(save_path, index=False)
 
+def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='random_sample'):
+    if modality == 'tessera_2024' or modality == 'tessera':
+        modality = 'tessera_centre'
+    elif modality == 'alphaearth':
+        modality = 'alphaearth_centre'
+    
+    assert os.path.exists(parent_folder), f'Parent folder {parent_folder} does not exist.'
+    assert modality in os.listdir(parent_folder), f'Modality {modality} not found in {parent_folder}.'
+    assert sample_type in ['random_sample', 'lc_stratified_sample'], f'sample_type should be random_sample or lc_stratified_sample, got {sample_type}.'
+
+    folder = os.path.join(parent_folder, modality)
+    assert os.path.exists(folder), f'Modality folder {folder} does not exist.'
+    file_name = f'{sample_type}_{modality}.csv'
+    file_path = os.path.join(folder, file_name)
+    assert os.path.exists(file_path), f'File {file_name} not found in {folder}.'
+    df = pd.read_csv(file_path)
+    return df
