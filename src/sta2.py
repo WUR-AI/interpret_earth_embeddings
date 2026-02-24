@@ -14,6 +14,7 @@ import tqdm
 from matplotlib import pyplot as plt
 from matplotlib import colormaps
 from matplotlib.patches import Rectangle
+from scipy.stats import zscore
 import scipy.optimize as opt
 
 # Quick utility function for fitting 2d gaussians
@@ -51,15 +52,22 @@ land_cover = [{id: du.load_tiff(os.path.join(data_folder, 'dynamicworld', f'{id}
 window = 32
 N_perm = 100
 
+# Analysis parameters
+do_perm = False
+do_zscore_lc = True
+do_zscore_px = True
+do_regress = True
+
 # Collect receptive fields
 receptive_fields = [[[] for _ in samples] for _ in modalities]
 
 # Select one embedding matrix
-for m_i in range(len(modalities)):
+for m_i in range(0,3):#len(modalities)):
     for s_i in range(len(samples)):
         # Print progress
         print(f'Calculating receptive fields for {modalities[m_i]}, {samples[s_i]}')
-        emb = embeddings[m_i][s_i]
+        # Temporary fix: some embeddings don't have land cover; exclude those
+        emb = embeddings[m_i][s_i][[s_id in land_cover[s_i] for s_id in embeddings[m_i][s_i]['id']]]
 
         # Stack land cover for these embeddings
         # This is a samples x land covers x pixels x pixels matrix
@@ -74,6 +82,14 @@ for m_i in range(len(modalities)):
         # which is a samples x embedding dimension matrix
         pix_emb = emb.to_numpy()[:,~emb.columns.isin(['id'])]
 
+        # z-score the embeddings and land cover patches, if required
+        if do_zscore_lc:
+            # z-score within each land cover (which is the second dimension)
+            lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
+        if do_zscore_px:
+            # z-score within each embedding dimension (which is second dimension)
+            pix_emb = zscore(pix_emb, axis=0)
+
         # Calculate the weighted sum as receptive field
         # This is a land cover x embedding x pixels x pixels matrix
         # My natural way of implementing this is the below, 
@@ -85,25 +101,44 @@ for m_i in range(len(modalities)):
         # Then do the actual weighted average with einsum instead of broadcasting
         rec_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb) / lc.shape[0]
 
-        # Now I want to calculate receptive fields as a permutation test
-        # I want to repeat it for permuted pixel embeddings,
-        # then z-score the unpermuted fields against the permutations
-        # To z-score I need mean and variance, but I can't store them for all permutations
-        # So calculate both in a "streaming" online way (Welford's algorithm)
-        perm_mean = np.zeros_like(rec_field)
-        perm_M2 = np.zeros_like(perm_mean)
-        for i in tqdm.tqdm(range(N_perm)):
-            perm_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb[np.random.permutation(len(pix_emb))]) / lc.shape[0]
-            delta = perm_field - perm_mean
-            perm_mean += delta / (i + 1)
-            delta2 = perm_field - perm_mean
-            perm_M2 += delta * delta2
-        perm_variance = perm_M2 / (N_perm - 1)
-        perm_std = np.sqrt(perm_variance)
+        # Find receptive field by permutating feature values between patches
+        if do_perm:
+            # Now I want to calculate receptive fields as a permutation test
+            # I want to repeat it for permuted pixel embeddings,
+            # then z-score the unpermuted fields against the permutations
+            # To z-score I need mean and variance, but I can't store them for all permutations
+            # So calculate both in a "streaming" online way (Welford's algorithm)
+            perm_mean = np.zeros_like(rec_field)
+            perm_M2 = np.zeros_like(perm_mean)
+            for i in tqdm.tqdm(range(N_perm)):
+                perm_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb[np.random.permutation(len(pix_emb))]) / lc.shape[0]
+                delta = perm_field - perm_mean
+                perm_mean += delta / (i + 1)
+                delta2 = perm_field - perm_mean
+                perm_M2 += delta * delta2
+            perm_variance = perm_M2 / (N_perm - 1)
+            perm_std = np.sqrt(perm_variance)
+            # Finally calculate the z-score
+            rec_field = (rec_field - perm_mean) / perm_std
 
-        # Finally calculate the z-score
-        rec_z = (rec_field - perm_mean) / perm_std
-        receptive_fields[m_i][s_i] = rec_z
+        # Regress out the average land cover value across patches, if required
+        if do_regress:
+            cleaned_rec_field = np.zeros_like(rec_field)
+            # Find the average land cover across all patches
+            avg_lc = np.mean(lc, axis=0)        
+            for lc_i, (curr_lc, curr_rec_field) in enumerate(zip(avg_lc, rec_field)):
+                # Regress out the average land cover from the receptive field
+                X = curr_lc.reshape(-1)
+                X = np.stack([np.ones(X.size), X], axis=-1)
+                Y = curr_rec_field.reshape([curr_rec_field.shape[0],-1]).T
+                b = np.linalg.pinv(X) @ Y
+                e = Y - X@b 
+                cleaned_rec_field[lc_i] = e.T.reshape(curr_rec_field.shape)
+            rec_field = cleaned_rec_field
+
+        # Store land cover x embedding x pixels x pixels receptive fields
+        # in big list of modalities and sample types
+        receptive_fields[m_i][s_i] = rec_field
 
 ### PLOT RESULTS ###
 
@@ -113,19 +148,20 @@ names = [k for k in du.create_cmap_dynamic_world().keys()]
 # Plot a selection of stas
 for m_i in range(len(modalities)):
     for s_i in range(len(samples)):
-        rec_z = receptive_fields[m_i][s_i]
-        h_to_plot = rec_z.shape[0]
+        curr_fields = receptive_fields[m_i][s_i]
+        h_to_plot = curr_fields.shape[0]
         f_to_plot = 20
-        lim = np.nanmax(np.abs(rec_z[:h_to_plot, :f_to_plot]))
+        lim = np.nanmax(np.abs(curr_fields[:h_to_plot, :f_to_plot]))
         # Plot one tuning curve per hypothesis per feature
         for plot_lim in [lim, None]:
             plt.figure(figsize=(f_to_plot, h_to_plot))
             plt.suptitle(f'{modalities[m_i]}, {samples[s_i]}')
-            for row, hyp_rec in enumerate(rec_z[:h_to_plot]):
+            for row, hyp_rec in enumerate(curr_fields[:h_to_plot]):
                 for col, rec in enumerate(hyp_rec[:f_to_plot]):
                     ax = plt.subplot(h_to_plot, f_to_plot, row * f_to_plot + col + 1)
                     if plot_lim is None:
-                        ax.imshow(rec,cmap='RdBu_r')
+                        plot_lim = np.nanmax(np.abs(curr_fields[:, col]))
+                        ax.imshow(rec,cmap='RdBu_r', vmin=-plot_lim, vmax=plot_lim)
                     else:
                         ax.imshow(rec,cmap='RdBu_r', vmin=-plot_lim, vmax=plot_lim)
                     ax.set_xticks([])
