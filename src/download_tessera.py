@@ -1,9 +1,6 @@
 from geotessera import GeoTessera
-import shapely
 import argparse
 from pyproj import Transformer
-from shapely.geometry import box
-from shapely.ops import transform
 import math
 import os
 import numpy as np
@@ -14,8 +11,6 @@ from rasterio.merge import merge
 from rasterio.crs import CRS
 from rasterio.transform import Affine
 from rasterio.warp import Resampling, calculate_default_transform, reproject
-import time
-from typing import Any
 
 
 def get_point_utm_crs(lon: float, lat: float) -> str:
@@ -50,33 +45,6 @@ def crs_to_pixel_coords(x, y, transform):
     return col, row
 
 
-def create_bbox_with_radius(lon: float, lat: float, radius: float, utm_crs: str = None, return_wgs: bool = False) -> shapely.geometry.Polygon:
-    """Creates a square bounding box of given radius (meters) around lon/lat.
-
-    :param lon: Longitude (EPSG:4326)
-    :param lat: Latitude (EPSG:4326)
-    :param radius: Radius in meters
-    :param utm_crs: Optional EPSG code for UTM CRS (e.g. "EPSG:32633")
-    :param return_wgs: If True, returns WGS84 GeoJSON, else UTM Polygon
-    """
-
-    # Determine UTM CRS
-    utm_crs = utm_crs or get_point_utm_crs(lon, lat)
-
-    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-    x, y = to_utm.transform(lon, lat)
-
-    # Create bbox in UTM
-    square_utm = box(x - radius, y - radius, x + radius, y + radius)
-
-    if return_wgs:
-        to_wgs = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
-        square_wgs = transform(to_wgs.transform, square_utm)
-        return square_wgs
-
-    return square_utm
-
-
 def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
     """Reprojects Memory file if it's not in dst_crs.
 
@@ -100,45 +68,34 @@ def reproject_dataset(src_raster: MemoryFile, dst_crs: str) -> MemoryFile:
         reproject(source=rasterio.band(src_raster, i), destination=rasterio.band(dst, i), src_transform=src_raster.transform, src_crs=src_raster.crs, dst_transform=transform, dst_crs=dst_crs, resampling=Resampling.nearest, )
     return dst, memfile
 
-def fetch_files_manually(
-    bounds: tuple[float, float, float, float],
-    year: int,
-    padding_tiles: int = 1,
-) -> list[tuple[int, float, float]]:
-    """Compute tessera tile IDs (year, lon, lat) for a bbox with optional padding.
+def get_tiles(lat_center, lon_center, half_size_m=75, year=2024):
+    """Find all 0.1deg tiles (referenced at 0.05deg) that overlap AOI."""
 
-    GeoTessera uses 0.1°×0.1° tiles centered at 0.05° offsets (e.g. -123.75, 50.15).
-    Use padding_tiles to add extra rows/cols so the mosaic extends beyond the crop region
-    (e.g. when r_min < 0 because the center point is near a tile edge).
+    # Convert half-size from meters to degrees (approximate)
+    half_lat_deg = half_size_m / 111320.0
+    half_lon_deg = half_size_m / (111320.0 * np.cos(np.radians(lat_center)))
 
-    Args:
-        bounds: (minx, miny, maxx, maxy) in WGS84
-        year: Year of embeddings
-        padding_tiles: Extra tile rows/cols to add on each side (default 2)
+    # AOI bounds
+    lat_min = lat_center - half_lat_deg
+    lat_max = lat_center + half_lat_deg
+    lon_min = lon_center - half_lon_deg
+    lon_max = lon_center + half_lon_deg
 
-    Returns:
-        List of (year, tile_lon, tile_lat) tuples. These can be passed to
-        tessera_con.fetch_embeddings(). Filter by registry if needed:
-        tiles = [t for t in bbox_to_tiles(...) if registry has t].
-    """
-    minx, miny, maxx, maxy = bounds
-    expand = padding_tiles * 0.1  # 0.1° per tile
-    minx = minx - expand
-    miny = miny - expand
-    maxx = maxx + expand
-    maxy = maxy + expand
+    tile_size = 0.1
 
-    # Tile centers at 0.05 + k*0.1 (geotessera convention)
+    # Find tile indices overlapping the AOI
+    i_min = int(np.floor(lat_min / tile_size))
+    i_max = int(np.floor(lat_max / tile_size))
+    j_min = int(np.floor(lon_min / tile_size))
+    j_max = int(np.floor(lon_max / tile_size))
+
     tiles = []
-    tile_lon = np.floor(minx * 10) / 10 + 0.05
-    while tile_lon <= maxx + 1e-9:
-        tile_lat = np.floor(miny * 10) / 10 + 0.05
-        while tile_lat <= maxy + 1e-9:
-            tiles.append(
-                (int(year), float(round(tile_lon, 2)), float(round(tile_lat, 2)))
-            )
-            tile_lat += 0.1
-        tile_lon += 0.1
+    for i in range(i_min, i_max + 1):
+        for j in range(j_min, j_max + 1):
+            ref_lat = i * tile_size + 0.05  # tile reference (center)
+            ref_lon = j * tile_size + 0.05
+            tiles.append((year, round(ref_lon, 10), round(ref_lat, 10)))
+
     return tiles
 
 
@@ -148,9 +105,10 @@ def get_tessera_embeds(
         save_dir: str,
         tile_size: int,
         tessera_con: GeoTessera | None,
-        padding: int = 10,
-        retry: bool = False,
+        padding: int = 100
     ) -> None:
+
+    # Skip if tile exists
     embed_tile_name = os.path.join(save_dir, f"{row.row_id}_tessera_y-{year}.tif")
     if os.path.exists(embed_tile_name):
         return
@@ -159,58 +117,10 @@ def get_tessera_embeds(
     utm_crs = get_point_utm_crs(row.lon, row.lat)
     lon_utm, lat_utm = point_reprojection(row.lon, row.lat, "EPSG:4326", utm_crs)
 
-    # Bounding box
-    radius = math.ceil(tile_size / 2) + padding
-    bbox = create_bbox_with_radius(row.lon, row.lat, radius=radius, utm_crs=utm_crs, return_wgs=True)
-
     # Request to tessera
-    tiles_to_fetch = tessera_con.registry.load_blocks_for_region(bounds=bbox.bounds, year=int(year))
-    if len(tiles_to_fetch) == 0:
-        raise EnvironmentError(f"No tiles found for {row.row_id}")
+    radius = math.ceil(tile_size / 2) + padding
+    tiles_to_fetch = get_tiles(lat_center=row.lat, lon_center=row.lon, half_size_m=radius * 10, year=int(year))
 
-    mosaic, mosaic_transform = mosaic_tessera_tiles(tessera_con, tiles_to_fetch, utm_crs)
-
-    # Crop patch tile
-    c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
-    half = tile_size // 2
-    row_min = r - half
-    row_max = r + half
-    col_min = c - half
-    col_max = c + half
-
-    if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0):
-        if retry:
-            # Fetch neighboring tiles
-            tiles_to_fetch = fetch_files_manually(bbox.bounds, int(year))
-            mosaic, mosaic_transform = mosaic_tessera_tiles(tessera_con, tiles_to_fetch, utm_crs)
-
-            # Crop patch tile
-            c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
-            half = tile_size // 2
-            row_min = r - half
-            row_max = r + half
-            col_min = c - half
-            col_max = c + half
-        else:
-            raise ValueError(f"Out of range for {row.row_id}")
-    crop = mosaic[row_min:row_max, col_min:col_max, :]
-
-    # Save array
-    os.makedirs(save_dir, exist_ok=True)
-
-    crop_transform = mosaic_transform * Affine.translation(col_min, row_min)
-
-    height, width, channels = crop.shape
-
-    with rasterio.open(embed_tile_name, "w", driver="GTiff", height=height, width=width, count=channels, dtype=crop.dtype, crs=utm_crs, transform=crop_transform, ) as dst:
-        for i in range(channels):
-            dst.write(crop[:, :, i], i + 1)
-
-    print(f"GeoTIFF saved as {embed_tile_name}")
-
-
-def mosaic_tessera_tiles(tessera_con: GeoTessera | None, tiles_to_fetch: list[tuple[int, float, float]],
-                         utm_crs: str) -> tuple[Any, Any]:
     # Mosaic returned tiles for the bbox
     tiles = []
     memfiles = []
@@ -230,6 +140,9 @@ def mosaic_tessera_tiles(tessera_con: GeoTessera | None, tiles_to_fetch: list[tu
         if reproject_memfile:
             memfiles.append(reproject_memfile)
 
+    if len(tiles) == 0:
+        raise EnvironmentError(f"No tiles found for {row.row_id}") # if no tiles, add to skipped.txt
+
     mosaic, mosaic_transform = merge(tiles)
     mosaic = mosaic.transpose(1, 2, 0)
 
@@ -237,7 +150,32 @@ def mosaic_tessera_tiles(tessera_con: GeoTessera | None, tiles_to_fetch: list[tu
         tile.close()
     for mf in memfiles:
         mf.close()
-    return mosaic, mosaic_transform
+
+    # Crop patch tile
+    c, r = crs_to_pixel_coords(lon_utm, lat_utm, mosaic_transform)
+    half = tile_size // 2
+    row_min = r - half
+    row_max = r + half
+    col_min = c - half
+    col_max = c + half
+
+    if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0):
+        raise ValueError(f"Crop for {row.row_id} is out of range") # Not final error, try to increase search padding
+
+    crop = mosaic[row_min:row_max, col_min:col_max, :]
+    assert crop.shape == (128, 128, 128), EnvironmentError(f"Crop {row.row_id}, size is {crop.shape}")
+    assert not (crop.min() == 0.0 and crop.max() == 0.0), EnvironmentError(f"Crop {row.row_id} has embeddings of 0.0s with tiles: {tiles_to_fetch}")
+
+    # Save array
+    os.makedirs(save_dir, exist_ok=True)
+    crop_transform = mosaic_transform * Affine.translation(col_min, row_min)
+    height, width, channels = crop.shape
+
+    with rasterio.open(embed_tile_name, "w", driver="GTiff", height=height, width=width, count=channels, dtype=crop.dtype, crs=utm_crs, transform=crop_transform, ) as dst:
+        for i in range(channels):
+            dst.write(crop[:, :, i], i + 1)
+
+    print(f"GeoTIFF saved as {embed_tile_name}")
 
 
 def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
@@ -262,7 +200,6 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     for fn in os.listdir(save_dir):
         if not fn.endswith(f"_tessera_y-{year}.tif"):
             continue
-        # Filenames are of the form "{row_id}_tessera_y-{year}.tif"
         try:
             rid_str = fn.split("_", 1)[0]
             rid = int(rid_str)
@@ -270,10 +207,20 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
             continue
         existing_ids.add(rid)
 
+    # Remove tiles that were skipped as they do not exist
+    with open(os.path.join('logs', f'tessera_skipped.txt'), 'r') as f:
+        for fn in f:
+            try:
+                rid_str = fn.split("_", 1)[0]
+                rid = int(rid_str)
+            except ValueError:
+                pass
+            existing_ids.add(rid)
+
+    # Filter out
     if existing_ids:
         df = df[~df["id"].isin(existing_ids)]
         df.reset_index(drop=True, inplace=True)
-
 
     # Slice per SLURM array task
     total = len(df)
@@ -295,8 +242,6 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     df.rename(columns={'id': 'row_id'}, inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    print(f"Processing {len(df)} locations")
-
     # Tessera connection        
     cache_dir = os.path.join(cache_root, 'tessera_cache')
     os.makedirs(cache_dir, exist_ok=True)
@@ -305,15 +250,19 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     fast_save_dir = os.path.join(cache_root, 'tessera_data', f'tessera_{year}')
     os.makedirs(fast_save_dir, exist_ok=True)
 
+    print(f"Processing {len(df)} locations")
+
     # Download
     for row in df.itertuples():
         try:
-            get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt, retry=True)
+            get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt)
         except Exception as e:
-            print(f"{row.row_id} did not get embedded: {e}")
-            path = os.path.join('logs', f'tessera_skipped_{start}.txt')
-            with open(path, 'a') as f:
-                f.write(f"{row.row_id} because {e}\n")
+            if type(e) is EnvironmentError:
+                path = os.path.join('logs', f'tessera_skipped.txt')
+                with open(path, 'a') as f:
+                    f.write(f"{row.row_id}\n")
+            else:
+                print(f"{row.row_id} did not get embedded because: {e}")
 
 
 if __name__ == "__main__":
