@@ -13,6 +13,17 @@ from rasterio.transform import Affine
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
 
+class PartialTileError(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+class NoTileError(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
 def get_point_utm_crs(lon: float, lat: float) -> str:
     """Determine local UTM crs code from given latitude and longitude.
 
@@ -141,7 +152,7 @@ def get_tessera_embeds(
             memfiles.append(reproject_memfile)
 
     if len(tiles) == 0:
-        raise EnvironmentError(f"No tiles found for {row.row_id}") # if no tiles, add to skipped.txt
+        raise NoTileError(f"No tiles found for {row.row_id}") # if no tiles, add to skipped.txt
 
     mosaic, mosaic_transform = merge(tiles)
     mosaic = mosaic.transpose(1, 2, 0)
@@ -160,11 +171,19 @@ def get_tessera_embeds(
     col_max = c + half
 
     if (row_min < 0 or row_max < 0 or col_min < 0 or col_max < 0):
-        raise ValueError(f"Crop for {row.row_id} is out of range") # Not final error, try to increase search padding
+        # retry with bigger padding
+        if padding > 500:
+            raise NoTileError(f"Padding {padding} > 500")
+        get_tessera_embeds(row, year, save_dir, tile_size, tessera_con, padding=padding+100)
 
     crop = mosaic[row_min:row_max, col_min:col_max, :]
-    assert crop.shape == (128, 128, 128), EnvironmentError(f"Crop {row.row_id}, size is {crop.shape}")
-    assert not (crop.min() == 0.0 and crop.max() == 0.0), EnvironmentError(f"Crop {row.row_id} has embeddings of 0.0s with tiles: {tiles_to_fetch}")
+    if not crop.shape == (128, 128, 128):
+        if (crop.min() == 0.0 and crop.max() == 0.0):
+            raise NoTileError(f"No tiles found for {row.row_id}")
+        raise PartialTileError(f"Crop {row.row_id}, size is {crop.shape}")
+
+    if (crop.min() == 0.0 and crop.max() == 0.0):
+        raise NoTileError(f"Crop {row.row_id} has embeddings of 0.0s with tiles: {tiles_to_fetch}")
 
     # Save array
     os.makedirs(save_dir, exist_ok=True)
@@ -208,14 +227,15 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
         existing_ids.add(rid)
 
     # Remove tiles that were skipped as they do not exist
-    with open(os.path.join('logs', f'tessera_skipped.txt'), 'r') as f:
-        for fn in f:
-            try:
-                rid_str = fn.split("_", 1)[0]
-                rid = int(rid_str)
-            except ValueError:
-                pass
-            existing_ids.add(rid)
+    if os.path.exists(os.path.join('logs', f'tessera_skipped.txt')):
+        with open(os.path.join('logs', f'tessera_skipped.txt'), 'r') as f:
+            for fn in f:
+                try:
+                    rid_str = fn.split("_", 1)[0]
+                    rid = int(rid_str)
+                except ValueError:
+                    pass
+                existing_ids.add(rid)
 
     # Filter out
     if existing_ids:
@@ -242,10 +262,10 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     df.rename(columns={'id': 'row_id'}, inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # Tessera connection        
+    # Tessera connection
     cache_dir = os.path.join(cache_root, 'tessera_cache')
     os.makedirs(cache_dir, exist_ok=True)
-    gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=cache_dir)
+    gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=cache_dir, dataset_version='v1')
 
     fast_save_dir = os.path.join(cache_root, 'tessera_data', f'tessera_{year}')
     os.makedirs(fast_save_dir, exist_ok=True)
@@ -257,7 +277,7 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
         try:
             get_tessera_embeds(row, year, fast_save_dir, tile_size, tessera_con=gt)
         except Exception as e:
-            if type(e) is EnvironmentError:
+            if type(e) is NoTileError:
                 path = os.path.join('logs', f'tessera_skipped.txt')
                 with open(path, 'a') as f:
                     f.write(f"{row.row_id}\n")
