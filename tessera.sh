@@ -2,7 +2,7 @@
 #SBATCH --job-name=tessera_download
 #SBATCH --output=logs/tessera_%A_%a.out
 #SBATCH --error=logs/tessera_%A_%a.err
-#SBATCH --array=0
+#SBATCH --array=0-9
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=12:00:00
@@ -30,4 +30,5 @@ python -u src/download_tessera.py \
         --root_dir /lustre/backup/SHARED/AIN/embed_interpret/ \
         --cache_root /lustre/scratch/WUR/AIN/tijun001/ \
         --year 2024 \
-        --size 128 
+        --size 128 \
+        --version 2
