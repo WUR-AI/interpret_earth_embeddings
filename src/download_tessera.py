@@ -197,7 +197,7 @@ def get_tessera_embeds(
     print(f"GeoTIFF saved as {embed_tile_name}")
 
 
-def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
+def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None, version="v1"):
     csv_path = os.path.join(root_dir, 'data', 'dw_locations_2026-02-13-1659_year-2024_50m_spherical_100k_random_stratified.csv')
     df = pd.read_csv(csv_path)
 
@@ -265,7 +265,7 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None):
     # Tessera connection
     cache_dir = os.path.join(cache_root, 'tessera_cache')
     os.makedirs(cache_dir, exist_ok=True)
-    gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=cache_dir, dataset_version='v1')
+    gt = GeoTessera(cache_dir=cache_dir, embeddings_dir=cache_dir, dataset_version=version)
 
     fast_save_dir = os.path.join(cache_root, 'tessera_data', f'tessera_{year}')
     os.makedirs(fast_save_dir, exist_ok=True)
@@ -293,8 +293,9 @@ if __name__ == "__main__":
     parser.add_argument("--root_dir", type=str, required=True, help="Root directory path.")
     parser.add_argument("--cache_root", type=str, required=True, help="Directory to store embed cache (requires large storage limit).")
     parser.add_argument("--year", type=int, default=2024, help="Year (default: 2024).")
+    parser.add_argument("--version", type=int, default=1, help="Version of the dataset (default: v1).")
     parser.add_argument("--size", type=int, default=128, help="Image size (default: 128).")
 
     args = parser.parse_args()
     print(f"Starting download of tessera data for locations from index {args.start} to {args.stop}...")
-    main(start=args.start, stop=args.stop, root_dir=args.root_dir, year=args.year, tile_size=args.size, cache_root=args.cache_root)
+    main(start=args.start, stop=args.stop, root_dir=args.root_dir, year=args.year, tile_size=args.size, cache_root=args.cache_root, version=f"v{args.version}")
