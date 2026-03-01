@@ -1,6 +1,5 @@
 import os
-import glob
-import re
+import pandas as pd
 
 import numpy as np
 import rasterio
@@ -19,42 +18,50 @@ def sanity_chek_rasters(path: str, threshold=0.05, nan_val=0.0) -> str:
 
 
 def main(root_dir):
-    pattern = os.path.join(root_dir, "*.tif")
-    tif_files = sorted(glob.glob(pattern))
 
-    if not tif_files:
-        print(f"No .tif files found in {root_dir}")
-        # return
+    csv_path = os.path.join(root_dir, 'data', 'dw_locations_2026-02-13-1659_year-2024_50m_spherical_100k_random_stratified.csv')
+    df = pd.read_csv(csv_path)
 
-    print(f"Found {len(tif_files)} .tif files in {root_dir}\n")
+    # Subset for selected samples
+    df = df[(df['random_sample'] == 1) | (df['lc_stratified_sample'] == 1)]
+    df.reset_index(drop=True, inplace=True)
+    df.rename(columns={'id': 'row_id'}, inplace=True)
+
+    save_dir = os.path.join(root_dir, 'data', f'tessera_2024_v1')
 
     empty_files = []
     partial_files = {}
+    missing_files = []
 
-    for path in tif_files:
-        try:
+    for row in df.itertuples():
+        path = os.path.join(save_dir, f'{row.row_id}_tessera_y-2024.tif')
+        if not os.path.exists(path):
+            missing_files.append(path)
+            print(f"[MISSING]     {os.path.basename(path)}")
+        else:
             flag = sanity_chek_rasters(path, threshold=0.02)
-        except Exception as e:
-            print(f"Error reading {path}: {e}")
-            continue
-
-        if flag == 'completely_empty':
-            empty_files.append(path)
-            print(f"[EMPTY]     {os.path.basename(path)}")
-        elif 'partially_empty' in flag:
-            partial_files[path] = flag.split(':')[-1].strip()
-            print(f"[PARTIAL]    {os.path.basename(path)}", partial_files[path])
+            if flag == 'completely_empty':
+                empty_files.append(path)
+                print(f"[EMPTY]     {os.path.basename(path)}")
+            elif 'partially_empty' in flag:
+                partial_files[path] = flag.split(':')[-1].strip()
+                print(f"[PARTIAL]    {os.path.basename(path)}", partial_files[path])
 
     print("\nSummary:")
+    print(f"  Missing     : {len(missing_files)}")
     print(f"  Empty     : {len(empty_files)}")
     print(f"  Partial     : {len(partial_files)}")
 
-    if empty_files:
-        with open(f'{root_dir}/empty_tessera.txt', 'a') as f:
+    if len(missing_files) > 0:
+        with open(os.path.join(save_dir, 'tessera_skipped.txt'), 'w') as f:
+            f.write('\n'.join(missing_files))
+
+    if len(empty_files) > 0:
+        with open(f'{save_dir}/empty_tessera.txt', 'a') as f:
             f.write('\n'.join(empty_files))
 
-    if partial_files:
-        with open(f'{root_dir}/partial_tessera.txt', 'a') as f:
+    if len(partial_files) > 0:
+        with open(f'{save_dir}/partial_tessera.txt', 'a') as f:
             for k, v  in partial_files.items():
                 f.write(f'{k} {v}\n')
 
