@@ -236,6 +236,10 @@ def main(start, stop, root_dir, year=2024, tile_size=128, cache_root=None, versi
                 except ValueError:
                     pass
                 existing_ids.add(rid)
+    else:
+        os.makedirs(os.path.join('logs'), exist_ok=True)
+        with open(os.path.join('logs', f'tessera_skipped.csv'), 'w') as f:
+            f.write('')
 
     # Filter out
     if existing_ids:
