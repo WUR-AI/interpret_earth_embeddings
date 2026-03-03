@@ -72,4 +72,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root_dir", type=str, required=True, help="Root directory path.")
     args = parser.parse_args()
-    main(args['root_dir'])
+    main(args.root_dir)
