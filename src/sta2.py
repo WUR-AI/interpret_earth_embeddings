@@ -28,6 +28,78 @@ def gauss_2d(xy, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
                             + c*((y-yo)**2)))
     return g.ravel()
 
+# Core function that calculates receptive fields
+# Takes as input a locations x dimensions embedding matrix,
+# and a locations x cover x pixels x pixels land cover matrix
+def get_receptive_field(emb, lc, window=32, N_perm=100, do_zscore_lc=True, do_zscore_px=True, do_perm=False, do_regress=False):
+    # Extract window around center
+    pixels = lc.shape[-1]
+    min_window = int(np.floor(pixels/2)-np.floor(window/2))
+    max_window = int(np.floor(pixels/2)+np.ceil(window/2))
+    lc = lc[:,:,min_window:max_window, min_window:max_window]
+
+    # Extract the matrix for centre pixel embeddings,
+    # which is a samples x embedding dimension matrix
+    pix_emb = emb.to_numpy()[:,~emb.columns.isin(['id'])]
+
+    # z-score the embeddings and land cover patches, if required
+    if do_zscore_lc:
+        # z-score within each land cover (which is the second dimension)
+        lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
+    if do_zscore_px:
+        # z-score within each embedding dimension (which is second dimension)
+        pix_emb = zscore(pix_emb, axis=0)
+
+    # Calculate the weighted sum as receptive field
+    # This is a land cover x embedding x pixels x pixels matrix
+    # My natural way of implementing this is the below, 
+    # but broadcasting creates huge intermediates, and I run out of RAM
+    # rec_field = np.mean(lc[:,:,None,:,:] * pix_emb[:,None,:,None,None], axis=0)
+    # Let's first make this easier on RAM by using float32
+    lc = lc.astype(np.float32)
+    pix_emb = pix_emb.astype(np.float32)
+    # Then do the actual weighted average with einsum instead of broadcasting
+    rec_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb) / lc.shape[0]
+
+    # Find receptive field by permutating feature values between patches
+    if do_perm:
+        # Now I want to calculate receptive fields as a permutation test
+        # I want to repeat it for permuted pixel embeddings,
+        # then z-score the unpermuted fields against the permutations
+        # To z-score I need mean and variance, but I can't store them for all permutations
+        # So calculate both in a "streaming" online way (Welford's algorithm)
+        perm_mean = np.zeros_like(rec_field)
+        perm_M2 = np.zeros_like(perm_mean)
+        for i in tqdm.tqdm(range(N_perm)):
+            perm_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb[np.random.permutation(len(pix_emb))]) / lc.shape[0]
+            delta = perm_field - perm_mean
+            perm_mean += delta / (i + 1)
+            delta2 = perm_field - perm_mean
+            perm_M2 += delta * delta2
+        perm_variance = perm_M2 / (N_perm - 1)
+        perm_std = np.sqrt(perm_variance)
+        # Finally calculate the z-score
+        rec_field = (rec_field - perm_mean) / perm_std
+
+    # Regress out the average land cover value across patches, if required
+    if do_regress:
+        cleaned_rec_field = np.zeros_like(rec_field)
+        # Find the average land cover across all patches
+        avg_lc = np.mean(lc, axis=0)        
+        for lc_i, (curr_lc, curr_rec_field) in enumerate(zip(avg_lc, rec_field)):
+            # Regress out the average land cover from the receptive field
+            X = curr_lc.reshape(-1)
+            X = np.stack([np.ones(X.size), X], axis=-1)
+            Y = curr_rec_field.reshape([curr_rec_field.shape[0],-1]).T
+            b = np.linalg.pinv(X) @ Y
+            e = Y - X@b 
+            cleaned_rec_field[lc_i] = e.T.reshape(curr_rec_field.shape)
+        rec_field = cleaned_rec_field
+
+    # Store land cover x embedding x pixels x pixels receptive fields
+    # in big list of modalities and sample types
+    return rec_field    
+
 ### LOAD DATA ###
 
 # Initialise paths
@@ -48,21 +120,11 @@ land_cover = [{id: du.load_tiff(os.path.join(data_folder, 'dynamicworld', f'{id}
 
 ### CALCULATE RECEPTIVE FIELDS ###
 
-# Hyperparams: window size, permutations
-window = 32
-N_perm = 100
-
-# Analysis parameters
-do_perm = False
-do_zscore_lc = True
-do_zscore_px = True
-do_regress = True
-
 # Collect receptive fields
 receptive_fields = [[[] for _ in samples] for _ in modalities]
 
 # Select one embedding matrix
-for m_i in range(0,3):#len(modalities)):
+for m_i in range(len(modalities)):
     for s_i in range(len(samples)):
         # Print progress
         print(f'Calculating receptive fields for {modalities[m_i]}, {samples[s_i]}')
@@ -72,73 +134,11 @@ for m_i in range(0,3):#len(modalities)):
         # Stack land cover for these embeddings
         # This is a samples x land covers x pixels x pixels matrix
         lc = np.stack([land_cover[s_i][s_id] for s_id in emb['id']])
-        # Extract window around center
-        pixels = lc.shape[-1]
-        min_window = int(np.floor(pixels/2)-np.floor(window/2))
-        max_window = int(np.floor(pixels/2)+np.ceil(window/2))
-        lc = lc[:,:,min_window:max_window, min_window:max_window]
 
-        # Extract the matrix for centre pixel embeddings,
-        # which is a samples x embedding dimension matrix
-        pix_emb = emb.to_numpy()[:,~emb.columns.isin(['id'])]
+        # Calculate receptive fields and store in big matrix
+        receptive_fields[m_i][s_i] = get_receptive_field(emb, lc)
 
-        # z-score the embeddings and land cover patches, if required
-        if do_zscore_lc:
-            # z-score within each land cover (which is the second dimension)
-            lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
-        if do_zscore_px:
-            # z-score within each embedding dimension (which is second dimension)
-            pix_emb = zscore(pix_emb, axis=0)
-
-        # Calculate the weighted sum as receptive field
-        # This is a land cover x embedding x pixels x pixels matrix
-        # My natural way of implementing this is the below, 
-        # but broadcasting creates huge intermediates, and I run out of RAM
-        # rec_field = np.mean(lc[:,:,None,:,:] * pix_emb[:,None,:,None,None], axis=0)
-        # Let's first make this easier on RAM by using float32
-        lc = lc.astype(np.float32)
-        pix_emb = pix_emb.astype(np.float32)
-        # Then do the actual weighted average with einsum instead of broadcasting
-        rec_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb) / lc.shape[0]
-
-        # Find receptive field by permutating feature values between patches
-        if do_perm:
-            # Now I want to calculate receptive fields as a permutation test
-            # I want to repeat it for permuted pixel embeddings,
-            # then z-score the unpermuted fields against the permutations
-            # To z-score I need mean and variance, but I can't store them for all permutations
-            # So calculate both in a "streaming" online way (Welford's algorithm)
-            perm_mean = np.zeros_like(rec_field)
-            perm_M2 = np.zeros_like(perm_mean)
-            for i in tqdm.tqdm(range(N_perm)):
-                perm_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb[np.random.permutation(len(pix_emb))]) / lc.shape[0]
-                delta = perm_field - perm_mean
-                perm_mean += delta / (i + 1)
-                delta2 = perm_field - perm_mean
-                perm_M2 += delta * delta2
-            perm_variance = perm_M2 / (N_perm - 1)
-            perm_std = np.sqrt(perm_variance)
-            # Finally calculate the z-score
-            rec_field = (rec_field - perm_mean) / perm_std
-
-        # Regress out the average land cover value across patches, if required
-        if do_regress:
-            cleaned_rec_field = np.zeros_like(rec_field)
-            # Find the average land cover across all patches
-            avg_lc = np.mean(lc, axis=0)        
-            for lc_i, (curr_lc, curr_rec_field) in enumerate(zip(avg_lc, rec_field)):
-                # Regress out the average land cover from the receptive field
-                X = curr_lc.reshape(-1)
-                X = np.stack([np.ones(X.size), X], axis=-1)
-                Y = curr_rec_field.reshape([curr_rec_field.shape[0],-1]).T
-                b = np.linalg.pinv(X) @ Y
-                e = Y - X@b 
-                cleaned_rec_field[lc_i] = e.T.reshape(curr_rec_field.shape)
-            rec_field = cleaned_rec_field
-
-        # Store land cover x embedding x pixels x pixels receptive fields
-        # in big list of modalities and sample types
-        receptive_fields[m_i][s_i] = rec_field
+### Fin
 
 ### PLOT RESULTS ###
 
