@@ -31,7 +31,7 @@ def gauss_2d(xy, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
 # Core function that calculates receptive fields
 # Takes as input a locations x dimensions embedding matrix,
 # and a locations x cover x pixels x pixels land cover matrix
-def get_receptive_field(emb, lc, window=32, N_perm=100, do_zscore_lc=True, do_zscore_px=True, do_perm=False, do_regress=False):
+def get_receptive_fields(emb, lc, window=32, N_perm=100, do_zscore_lc=True, do_zscore_px=True, do_perm=False, do_regress=False):
     # Extract window around center
     pixels = lc.shape[-1]
     min_window = int(np.floor(pixels/2)-np.floor(window/2))
@@ -117,8 +117,77 @@ embeddings = [[du.load_csv_with_points(parent_folder=data_folder, modality=m, sa
 # Then grab the land cover files
 land_cover = [{id: du.load_tiff(os.path.join(data_folder, 'dynamicworld', f'{id}_dynamicworld_y-2024.tif'), datatype='np')
                for id in tqdm.tqdm(s_id)} for s_id in sample_ids]
+# Get names of hypotheses: different coarse land coverage classes
+land_cover_names = [k for k in du.create_cmap_dynamic_world().keys()]
 
-### CALCULATE RECEPTIVE FIELDS ###
+### ANALYSE ALPHA EARTH EMBEDDINGS ###
+
+# Use the alpha earth embeddings for stratified sample
+m_i, s_i = 0, 1
+emb = embeddings[m_i][s_i][[s_id in land_cover[s_i] for s_id in embeddings[m_i][s_i]['id']]]
+emb_np = emb.to_numpy()
+lc = np.stack([land_cover[s_i][s_id] for s_id in emb['id']])
+rf = get_receptive_fields(emb, lc)
+
+# Find baselines: mean response across window
+baseline = np.mean(rf, axis=(-1,-2))
+basestd = np.std(rf, axis=(-1,-2))
+# Find peakyness: how much is the peak beyond the baseline
+peakyness = (np.max(np.abs(rf), axis=(-1,-2)) - np.abs(baseline)) / basestd
+# Find baseline z-stat: how much is baseline away from 0
+baseline_z = np.abs(baseline) / basestd
+# Find examples of *low* baseline but *high* peakyness
+# But introduce an additional offset for baseline, 
+# otherwise this will just be dominated by low-baseline (and not high-peakyness)
+# This offset will determine how much the selection is 
+# driven by low baseline (low offset) vs high peakyness (high offset)
+# If you put it too low, you just get flat curves
+# If you put it too high, the baseline doesn't matter, and you get high overall
+prime_examples = peakyness / np.maximum(baseline_z, 1)
+
+# Plot these variables
+plt.figure(); 
+plt.subplot(4,1,1)
+plt.imshow(baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
+plt.colorbar()
+plt.title('Baseline')
+plt.subplot(4,1,2)
+plt.imshow(peakyness, cmap='Greys')
+plt.colorbar()
+plt.title('Peakyness')
+plt.subplot(4,1,3)
+plt.imshow(baseline_z, cmap='Greys')
+plt.colorbar()
+plt.title('Baseline strength')
+plt.subplot(4,1,4)
+plt.imshow(prime_examples, cmap='Greys')
+plt.colorbar()
+plt.title('Peakyness/baseline strength: interesting profile?')
+
+# Get top 10 examples
+sorted_examples = np.argsort(prime_examples.reshape(-1))[::-1]
+sorted_indices = np.array(np.unravel_index(sorted_examples, prime_examples.shape))
+# Collect their receptive fiels
+sorted_rfs = rf.reshape([-1, rf.shape[-2], rf.shape[-1]])[sorted_examples]
+# Plot these
+select_best = 10
+plot_lc = 10
+rf_lim = np.max(np.abs(sorted_rfs[:select_best]))
+plt.figure();
+for i in range(select_best):
+    plt.subplot(plot_lc+1,select_best,i+1)
+    plt.imshow(sorted_rfs[i], vmin=-rf_lim, vmax=rf_lim, cmap='RdBu_r')
+    plt.title(f'{sorted_indices[1,i]}: {land_cover_names[sorted_indices[0,i]]}')
+    plt.xticks([])
+    plt.yticks([])
+    for j in range(plot_lc):
+        plt.subplot(plot_lc+1,select_best,(j+1)*select_best + i+1)
+        plt.imshow(lc[j,sorted_indices[0,i],:,:], vmin=0, vmax=1, cmap='Greys')
+        plt.title(f'{emb_np[j,sorted_indices[1,i]]:.2f}')
+        plt.xticks([])
+        plt.yticks([])        
+
+### CALCULATE ALL RECEPTIVE FIELDS ###
 
 # Collect receptive fields
 receptive_fields = [[[] for _ in samples] for _ in modalities]
@@ -136,14 +205,9 @@ for m_i in range(len(modalities)):
         lc = np.stack([land_cover[s_i][s_id] for s_id in emb['id']])
 
         # Calculate receptive fields and store in big matrix
-        receptive_fields[m_i][s_i] = get_receptive_field(emb, lc)
-
-### Fin
+        receptive_fields[m_i][s_i] = get_receptive_fields(emb, lc)
 
 ### PLOT RESULTS ###
-
-# Get names of hypotheses: different coarse land coverage classes
-names = [k for k in du.create_cmap_dynamic_world().keys()]
 
 # Plot a selection of stas
 for m_i in range(len(modalities)):
@@ -167,7 +231,7 @@ for m_i in range(len(modalities)):
                     ax.set_xticks([])
                     ax.set_yticks([])
                     if col == 0:
-                        ax.set_ylabel(names[row].replace('_','\n'), rotation=0, labelpad=20)
+                        ax.set_ylabel(land_cover_names[row].replace('_','\n'), rotation=0, labelpad=20)
                     if row == 0:
                         ax.set_title(f'F{col}')
             plt.tight_layout();
