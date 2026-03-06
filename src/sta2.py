@@ -16,6 +16,12 @@ from matplotlib import colormaps
 from matplotlib.patches import Rectangle
 from scipy.stats import zscore
 import scipy.optimize as opt
+import geopy.distance
+from sklearn.metrics.pairwise import haversine_distances
+
+coords_rad = np.radians(coords)  # shape (n, 2), lat/lon
+dist_matrix = haversine_distances(coords_rad) * 6371  # km
+
 
 # Quick utility function for fitting 2d gaussians
 # See https://stackoverflow.com/a/77432576/8919448
@@ -143,7 +149,7 @@ baseline_z = np.abs(baseline) / basestd
 # driven by low baseline (low offset) vs high peakyness (high offset)
 # If you put it too low, you just get flat curves
 # If you put it too high, the baseline doesn't matter, and you get high overall
-prime_examples = peakyness / np.maximum(baseline_z, 1)
+prime_examples = peakyness / np.maximum(baseline_z, 2)
 
 # Plot these variables
 plt.figure(); 
@@ -187,6 +193,30 @@ for i in range(select_best):
         plt.xticks([])
         plt.yticks([])        
 
+### EXPLORE SPATIAL VARIATION IN AE EMBEDDING ###
+
+# Get longitude and latitude for all patches
+loc = np.stack([[lat, lon] for lon, lat, id in zip(gdf_points['lon'], gdf_points['lat'], gdf_points['id']) 
+                if id in emb['id'].to_numpy()])
+# Create a approximate distance matrix between all points
+# This is inaccurate but fast; geodesic would be better, but slow
+coords_rad = np.radians(loc)
+dist_matrix = haversine_distances(coords_rad)
+
+# Grab a bunch of points that are relatively far away from each other
+N_points = 10
+points = [np.random.randint(len(loc))]
+for i in range(N_points-1):
+    prev_dist = np.min(dist_matrix[points], axis=0)
+    new_point = np.argmax(prev_dist)
+    points.append(new_point)
+points = np.array(points)
+
+# Logic from here:
+# 1. Get 1000 closest patches
+# 2. Calculate receptive fields
+# 3. Find dimensions that change a lot
+
 ### CALCULATE ALL RECEPTIVE FIELDS ###
 
 # Collect receptive fields
@@ -207,9 +237,7 @@ for m_i in range(len(modalities)):
         # Calculate receptive fields and store in big matrix
         receptive_fields[m_i][s_i] = get_receptive_fields(emb, lc)
 
-### PLOT RESULTS ###
-
-# Plot a selection of stas
+# Plot a selection of receptive fields
 for m_i in range(len(modalities)):
     for s_i in range(len(samples)):
         curr_fields = receptive_fields[m_i][s_i]
