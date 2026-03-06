@@ -14,6 +14,7 @@ import tqdm
 from matplotlib import pyplot as plt
 from matplotlib import colormaps
 from matplotlib.patches import Rectangle
+from matplotlib.gridspec import GridSpec
 from scipy.stats import zscore
 import scipy.optimize as opt
 import geopy.distance
@@ -44,28 +45,24 @@ def get_receptive_fields(emb, lc, window=32, N_perm=100, do_zscore_lc=True, do_z
     max_window = int(np.floor(pixels/2)+np.ceil(window/2))
     lc = lc[:,:,min_window:max_window, min_window:max_window]
 
-    # Extract the matrix for centre pixel embeddings,
-    # which is a samples x embedding dimension matrix
-    pix_emb = emb.to_numpy()[:,~emb.columns.isin(['id'])]
-
     # z-score the embeddings and land cover patches, if required
     if do_zscore_lc:
         # z-score within each land cover (which is the second dimension)
         lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
     if do_zscore_px:
         # z-score within each embedding dimension (which is second dimension)
-        pix_emb = zscore(pix_emb, axis=0)
+        emb = zscore(emb, axis=0)
 
     # Calculate the weighted sum as receptive field
     # This is a land cover x embedding x pixels x pixels matrix
     # My natural way of implementing this is the below, 
     # but broadcasting creates huge intermediates, and I run out of RAM
-    # rec_field = np.mean(lc[:,:,None,:,:] * pix_emb[:,None,:,None,None], axis=0)
+    # rec_field = np.mean(lc[:,:,None,:,:] * emb[:,None,:,None,None], axis=0)
     # Let's first make this easier on RAM by using float32
     lc = lc.astype(np.float32)
-    pix_emb = pix_emb.astype(np.float32)
+    emb = emb.astype(np.float32)
     # Then do the actual weighted average with einsum instead of broadcasting
-    rec_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb) / lc.shape[0]
+    rec_field = np.einsum('nmxy,nk->mkxy', lc, emb) / lc.shape[0]
 
     # Find receptive field by permutating feature values between patches
     if do_perm:
@@ -77,7 +74,7 @@ def get_receptive_fields(emb, lc, window=32, N_perm=100, do_zscore_lc=True, do_z
         perm_mean = np.zeros_like(rec_field)
         perm_M2 = np.zeros_like(perm_mean)
         for i in tqdm.tqdm(range(N_perm)):
-            perm_field = np.einsum('nmxy,nk->mkxy', lc, pix_emb[np.random.permutation(len(pix_emb))]) / lc.shape[0]
+            perm_field = np.einsum('nmxy,nk->mkxy', lc, emb[np.random.permutation(len(emb))]) / lc.shape[0]
             delta = perm_field - perm_mean
             perm_mean += delta / (i + 1)
             delta2 = perm_field - perm_mean
@@ -131,9 +128,9 @@ land_cover_names = [k for k in du.create_cmap_dynamic_world().keys()]
 # Use the alpha earth embeddings for stratified sample
 m_i, s_i = 0, 1
 emb = embeddings[m_i][s_i][[s_id in land_cover[s_i] for s_id in embeddings[m_i][s_i]['id']]]
-emb_np = emb.to_numpy()
 lc = np.stack([land_cover[s_i][s_id] for s_id in emb['id']])
-rf = get_receptive_fields(emb, lc)
+emb_np = emb.to_numpy()[:,~emb.columns.isin(['id'])]
+rf = get_receptive_fields(emb_np, lc)
 
 # Find baselines: mean response across window
 baseline = np.mean(rf, axis=(-1,-2))
@@ -212,10 +209,38 @@ for i in range(N_points-1):
     points.append(new_point)
 points = np.array(points)
 
-# Logic from here:
-# 1. Get 1000 closest patches
-# 2. Calculate receptive fields
-# 3. Find dimensions that change a lot
+# Select regions around points
+region_size = 1000
+regions = []
+for p in points:
+    regions.append(np.argsort(dist_matrix[p])[:region_size])
+regions = np.array(regions)
+
+# Get regional receptive fields
+# Careful: I want to z-score *before* receptive field calculation,
+# otherwise I z-score regions differently
+region_lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
+region_emb = zscore(emb_np, axis=0)
+regional_rfs = []
+for r in regions:
+    regional_rfs.append(get_receptive_fields(region_emb[r], region_lc[r], 
+                                             do_zscore_px=False, do_zscore_lc=False))
+
+# Plot regions, and baseline for each
+fig = plt.figure()
+gs = GridSpec(N_points+1, 1, height_ratios=[N_points] + [1 for _ in range(N_points)])
+ax = fig.add_subplot(gs[0])
+ax.set_aspect('equal')
+for r in regions:
+    # Add some noise so locations in multiple regions don't overlap
+    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
+    plt.legend([f'Region {i}' for i in range(N_points)])
+for i, r_rf in enumerate(regional_rfs):
+    ax = fig.add_subplot(gs[i+1])
+    baseline = np.mean(r_rf, axis=(-1,-2))
+    plt.imshow(baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
+
 
 ### CALCULATE ALL RECEPTIVE FIELDS ###
 
