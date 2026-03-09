@@ -340,6 +340,7 @@ regional_rfs = []
 for r in regions:
     regional_rfs.append(get_receptive_fields(region_emb[r], region_lc[r], 
                                              do_zscore_px=False, do_zscore_lc=False))
+regional_rfs = np.stack(regional_rfs)    
 
 # Plot regions, and baseline for each
 fig = plt.figure()
@@ -356,6 +357,31 @@ for i, r_rf in enumerate(regional_rfs):
     baseline = np.mean(r_rf, axis=(-1,-2))
     plt.imshow(baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
 
+# Pick one specific embedding, and plot it on the map
+fig = plt.figure();
+ax = plt.subplot(2,1,1)
+ax.set_aspect('equal')
+plt.xlim([-180,180])
+plt.ylim([-90,90])
+for r in regions:
+    # Add some noise so locations in multiple regions don't overlap
+    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
+    plt.legend([f'Region {i}' for i in range(N_points)])
+ax = plt.subplot(2,1,2)
+rf_to_plot = [0,38]
+for p_i, p in enumerate(points):
+    curr_dat = regional_rfs[p_i, rf_to_plot[0], rf_to_plot[1]]
+    plt.imshow(curr_dat,
+               extent=[loc[p,1]-20, loc[p,1]+20, loc[p,0]-20, loc[p,0]+20],
+               vmin=np.min(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]), 
+               vmax=np.max(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]),
+               cmap='Greys') # left right bottom top
+    ax.add_patch(Rectangle((loc[p,1]-20, loc[p,0]-20), 40, 40, 
+                           linewidth=2, edgecolor=colormaps['RdBu_r'](0.5 + 0.5*(np.mean(curr_dat) / np.max(np.abs(baseline)))), facecolor='none')) #xy, width height
+plt.xlim([-180,180])
+plt.ylim([-90,90])
+plt.title(f'{rf_to_plot[0]}, {rf_to_plot[1]}')
 
 ### CALCULATE ALL RECEPTIVE FIELDS ###
 
