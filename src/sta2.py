@@ -15,13 +15,11 @@ from matplotlib import pyplot as plt
 from matplotlib import colormaps
 from matplotlib.patches import Rectangle
 from matplotlib.gridspec import GridSpec
-from scipy.stats import zscore
+from scipy.stats import zscore, norm
 import scipy.optimize as opt
 import geopy.distance
 from sklearn.metrics.pairwise import haversine_distances
-
-coords_rad = np.radians(coords)  # shape (n, 2), lat/lon
-dist_matrix = haversine_distances(coords_rad) * 6371  # km
+from sklearn.mixture import GaussianMixture
 
 
 # Quick utility function for fitting 2d gaussians
@@ -190,6 +188,42 @@ for i in range(select_best):
         plt.xticks([])
         plt.yticks([])        
 
+### DISTINGUISH RESPONSIVE FROM NOISY DIMENSIONS ###
+
+# I want to only include receptive fields that *actually* respond
+# I'll assume that the responses are partially caused by noise,
+# and partially by true peaked responses
+
+# Alternative peakyness: use median absolute displacement
+# This seems to separate two populations a bit better
+residual = rf - np.median(rf, axis=(-1,-2), keepdims=True)
+mad = np.median(np.abs(residual), axis=(-1,-2))
+peak = np.max(np.abs(residual), axis=(-1,-2))
+peakyness = np.abs(peak) / basestd
+# Quick and dirty: fit a mixture of two gaussians, "noise" and "signal"
+gmm = GaussianMixture(n_components=2)
+gmm.fit(peakyness.reshape(-1, 1))
+# The signal component is the one with the higher mean
+signal_component = np.argmax(gmm.means_)
+# Classify the peakyness for each receptive field
+labels = gmm.predict(peakyness.reshape(-1, 1))
+is_signal = labels == signal_component
+# Plot distribution
+plt.figure()
+x = np.linspace(peakyness.min(), peakyness.max(), 300)
+for color, label in zip(['blue', 'red'], ['noise', 'signal']):
+    i = signal_component if label == 'signal' else (1-signal_component)
+    mean = gmm.means_[i, 0]
+    std = np.sqrt(gmm.covariances_[i, 0, 0])
+    weight = gmm.weights_[i]
+    plt.plot(x, weight * norm.pdf(x, mean, std), color=color, label=label)
+plt.plot(peakyness.reshape(-1)[is_signal],np.zeros(np.sum(is_signal)),  'rx')
+plt.plot(peakyness.reshape(-1)[~is_signal], np.zeros(np.sum(~is_signal)), 'bx')
+plt.hist(peakyness.reshape(-1), bins=50, density=True, alpha=0.4, color='gray')
+plt.legend()
+plt.xlabel('Peakyness')
+# Reshape labels to match receptive fields, and continue from those
+is_signal = np.reshape(is_signal, peakyness.shape)
 
 ### FIT GAUSSIANS TO RECEPTIVE FIELDS ###
 
