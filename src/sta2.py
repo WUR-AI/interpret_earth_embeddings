@@ -190,6 +190,87 @@ for i in range(select_best):
         plt.xticks([])
         plt.yticks([])        
 
+
+### FIT GAUSSIANS TO RECEPTIVE FIELDS ###
+
+# Fit a gaussian to each sta
+x, y = np.meshgrid(np.arange(rf.shape[-1]), np.arange(rf.shape[-1]))
+# Collect fitted parameters and resulting images
+all_params = np.full(list(rf.shape[:-2]) + [7], np.nan)
+all_fits = np.full(rf.shape, np.nan)
+for row, lc_rf in enumerate(rf):
+    print(f'Fitting Gaussians to hyp {row} / {len(land_cover_names)}')
+    for col, curr_rf in enumerate(tqdm.tqdm(lc_rf)):
+        # Only fit reasonably responsive receptive fields
+        if not is_signal[row, col]:
+            continue
+        curr_fits = []
+        curr_pars = []
+        for fit_type in ['pos', 'neg']:
+            # Set fit type dependent initial guesses: amplitude, offset, center
+            if fit_type == 'pos':       
+                a_0 = np.max(curr_rf) - np.min(curr_rf)
+                (y_0, x_0) = np.unravel_index(curr_rf.argmax(), curr_rf.shape)
+                o_0 = np.min(curr_rf)
+            else:
+                a_0 = np.min(curr_rf) - np.max(curr_rf)
+                (y_0, x_0) = np.unravel_index(curr_rf.argmin(), curr_rf.shape)
+                o_0 = np.max(curr_rf)
+            # Estimate the std as the pixel distance between the peak and the inflexion point:
+            # The location where the second derivative is nearest to 0
+            curve = np.mean(curr_rf, axis=0)
+            curve = np.diff(np.diff(np.mean(curr_rf, axis=0)))
+            sx_0 = max(1, np.abs(x_0 - np.argmin(np.abs(np.diff(np.diff(np.mean(curr_rf, axis=0))))) - 1)) # -1 because diff loses dim
+            sy_0 = max(1, np.abs(y_0 - np.argmin(np.abs(np.diff(np.diff(np.mean(curr_rf, axis=1))))) - 1))
+            theta_0 = 0.0
+            # Do the actual fit
+            try:
+                # find the optimal Gaussian parameters
+                popt, pcov = opt.curve_fit(gauss_2d, (x, y), curr_rf.ravel(), 
+                                            p0=(a_0, x_0, y_0, sx_0, sy_0, theta_0, o_0),
+                                            maxfev=int(1e5))   
+                # Store the resulting parameters and fit
+                curr_fits.append(gauss_2d((x, y), *popt).reshape(curr_rf.shape[-1],curr_rf.shape[-1]))
+                curr_pars.append(popt)
+            except RuntimeError as e:
+                # This generally happens when we run out of iterations
+                # That's usually caused by strongly non-gaussian stas. Let's just ignore those
+                print(f'Gaussian fit failed for type {fit_type}, hyp {row}, feature {col}. \n Error message: {e}')
+                # Store the resulting parameters and fit
+                curr_fits.append(np.zeros_like(curr_rf))
+                curr_pars.append(np.zeros(7))
+        # Only keep the best fit, between the positive and negative peak
+        best_fit = int(np.sum(np.square(curr_rf - curr_fits[0])) > np.sum(np.square(curr_rf - curr_fits[1])))
+        # Keep the best fit between min and max
+        all_params[row, col, :] = curr_pars[best_fit]
+        all_fits[row, col, :, :] = curr_fits[best_fit]
+
+lc_to_plot=8
+plt.figure();
+for i in range(rf.shape[1]):
+    plt.subplot(8, 8, i+1)
+    plt.imshow(rf[lc_to_plot,i],cmap='RdBu_r')
+    plt.title(str(peakyness[lc_to_plot,i]))
+plt.figure();
+for i in range(rf.shape[1]):
+    plt.subplot(8, 8, i+1)
+    plt.imshow(all_fits[lc_to_plot,i],cmap='RdBu_r')
+
+### EXPLORE RESPONSIVE EMBEDDINGS ###
+plt.figure();
+for row, rf_row in enumerate(rf):
+    for col, rf_col in enumerate(rf_row):
+        if not is_signal[row, col]:
+            ax = plt.subplot(rf.shape[0], rf.shape[1], row * rf.shape[1] + col + 1)
+            plt.imshow(rf_col,cmap='Greys')
+            plt.xticks([])
+            plt.yticks([])
+            for side in ['top', 'bottom', 'left', 'right']:
+                ax.spines[side].set_color(colormaps['RdBu_r'](0.5 + 0.5*(baseline[row, col] / np.max(np.abs(baseline)))))
+                ax.spines[side].set_linewidth(3)
+            plt.title(f'{row},{col}')
+plt.tight_layout()
+
 ### EXPLORE SPATIAL VARIATION IN AE EMBEDDING ###
 
 # Get longitude and latitude for all patches
