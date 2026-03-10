@@ -7,6 +7,7 @@ import xarray as xr
 import rioxarray as rxr
 import datetime
 from tqdm import tqdm, trange
+from scipy.stats import zscore
 # from skimage import exposure
 import loadpaths
 path_dict = loadpaths.loadpaths()
@@ -393,3 +394,29 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     assert os.path.exists(file_path), f'File {file_name} not found in {folder}.'
     df = pd.read_csv(file_path)
     return df
+
+def merge_modalities(parent_folder, sample_type='random_sample', 
+                     modalities=['alphaearth', 'tessera', 'satclip', 'geoclip', 'bioclim', 'human_footprint'],
+                     zscore_embeddings=False):
+    
+    list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
+    cols_keep = ['id', 'lat', 'lon']
+    df_all = gdf_points[gdf_points[sample_type] == True][cols_keep + DW_CLASSES]
+    names = {'dynamicworld': DW_CLASSES}
+    geospatial_mods = ['dynamicworld', 'bioclim', 'human_footprint']
+
+    for m in modalities:
+        df_mod = load_csv_with_points(parent_folder, modality=m, sample_type=sample_type)
+        if m not in geospatial_mods:
+            df_mod = df_mod.rename(columns={col: f'{m}_{col}' for col in df_mod.columns if col != 'id'})
+        names[m] = [col for col in df_mod.columns if col not in cols_keep]
+        df_all = df_all.merge(df_mod, on='id', how='inner')
+
+    if zscore_embeddings:
+        for m in modalities:
+            if m in geospatial_mods:
+                continue
+            emb_cols = names[m]
+            df_all[emb_cols] = df_all[emb_cols].apply(zscore)
+
+    return df_all, names
