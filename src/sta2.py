@@ -130,64 +130,6 @@ lc = np.stack([land_cover[s_i][s_id] for s_id in emb['id']])
 emb_np = emb.to_numpy()[:,~emb.columns.isin(['id'])]
 rf = get_receptive_fields(emb_np, lc)
 
-# Find baselines: mean response across window
-baseline = np.mean(rf, axis=(-1,-2))
-basestd = np.std(rf, axis=(-1,-2))
-# Find peakyness: how much is the peak beyond the baseline
-peakyness = (np.max(np.abs(rf), axis=(-1,-2)) - np.abs(baseline)) / basestd
-# Find baseline z-stat: how much is baseline away from 0
-baseline_z = np.abs(baseline) / basestd
-# Find examples of *low* baseline but *high* peakyness
-# But introduce an additional offset for baseline, 
-# otherwise this will just be dominated by low-baseline (and not high-peakyness)
-# This offset will determine how much the selection is 
-# driven by low baseline (low offset) vs high peakyness (high offset)
-# If you put it too low, you just get flat curves
-# If you put it too high, the baseline doesn't matter, and you get high overall
-prime_examples = peakyness / np.maximum(baseline_z, 2)
-
-# Plot these variables
-plt.figure(); 
-plt.subplot(4,1,1)
-plt.imshow(baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
-plt.colorbar()
-plt.title('Baseline')
-plt.subplot(4,1,2)
-plt.imshow(peakyness, cmap='Greys')
-plt.colorbar()
-plt.title('Peakyness')
-plt.subplot(4,1,3)
-plt.imshow(baseline_z, cmap='Greys')
-plt.colorbar()
-plt.title('Baseline strength')
-plt.subplot(4,1,4)
-plt.imshow(prime_examples, cmap='Greys')
-plt.colorbar()
-plt.title('Peakyness/baseline strength: interesting profile?')
-
-# Get top 10 examples
-sorted_examples = np.argsort(prime_examples.reshape(-1))[::-1]
-sorted_indices = np.array(np.unravel_index(sorted_examples, prime_examples.shape))
-# Collect their receptive fiels
-sorted_rfs = rf.reshape([-1, rf.shape[-2], rf.shape[-1]])[sorted_examples]
-# Plot these
-select_best = 10
-plot_lc = 10
-rf_lim = np.max(np.abs(sorted_rfs[:select_best]))
-plt.figure();
-for i in range(select_best):
-    plt.subplot(plot_lc+1,select_best,i+1)
-    plt.imshow(sorted_rfs[i], vmin=-rf_lim, vmax=rf_lim, cmap='RdBu_r')
-    plt.title(f'{sorted_indices[1,i]}: {land_cover_names[sorted_indices[0,i]]}')
-    plt.xticks([])
-    plt.yticks([])
-    for j in range(plot_lc):
-        plt.subplot(plot_lc+1,select_best,(j+1)*select_best + i+1)
-        plt.imshow(lc[j,sorted_indices[0,i],:,:], vmin=0, vmax=1, cmap='Greys')
-        plt.title(f'{emb_np[j,sorted_indices[1,i]]:.2f}')
-        plt.xticks([])
-        plt.yticks([])        
-
 ### DISTINGUISH RESPONSIVE FROM NOISY DIMENSIONS ###
 
 # I want to only include receptive fields that *actually* respond
@@ -196,10 +138,11 @@ for i in range(select_best):
 
 # Alternative peakyness: use median absolute displacement
 # This seems to separate two populations a bit better
-residual = rf - np.median(rf, axis=(-1,-2), keepdims=True)
+baseline = np.median(rf, axis=(-1,-2))
+residual = rf - baseline[:,:,None,None]
 mad = np.median(np.abs(residual), axis=(-1,-2))
 peak = np.max(np.abs(residual), axis=(-1,-2))
-peakyness = np.abs(peak) / basestd
+peakyness = np.abs(peak) / mad
 # Quick and dirty: fit a mixture of two gaussians, "noise" and "signal"
 gmm = GaussianMixture(n_components=2)
 gmm.fit(peakyness.reshape(-1, 1))
@@ -224,6 +167,340 @@ plt.legend()
 plt.xlabel('Peakyness')
 # Reshape labels to match receptive fields, and continue from those
 is_signal = np.reshape(is_signal, peakyness.shape)
+
+### EXPLORE SPATIAL VARIATION IN AE EMBEDDING ###
+
+# Get longitude and latitude for all patches
+loc = np.stack([[lat, lon] for lon, lat, id in zip(gdf_points['lon'], gdf_points['lat'], gdf_points['id']) 
+                if id in emb['id'].to_numpy()])
+# Create a approximate distance matrix between all points
+# This is inaccurate but fast; geodesic would be better, but slow
+coords_rad = np.radians(loc)
+dist_matrix = haversine_distances(coords_rad)
+
+# Grab a bunch of points that are relatively far away from each other
+N_points = 10
+points = [np.random.randint(len(loc))]
+for i in range(N_points-1):
+    prev_dist = np.min(dist_matrix[points], axis=0)
+    new_point = np.argmax(prev_dist)
+    points.append(new_point)
+points = np.array(points)
+
+# Select regions around points
+region_size = 1000
+regions = []
+for p in points:
+    regions.append(np.argsort(dist_matrix[p])[:region_size])
+regions = np.array(regions)
+
+# Get regional receptive fields
+# Careful: I want to z-score *before* receptive field calculation,
+# otherwise I z-score regions differently
+region_lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
+region_emb = zscore(emb_np, axis=0)
+regional_rfs = []
+for r in regions:
+    regional_rfs.append(get_receptive_fields(region_emb[r], region_lc[r], 
+                                             do_zscore_px=False, do_zscore_lc=False))
+regional_rfs = np.stack(regional_rfs)    
+
+# Plot regions, and baseline for each
+fig = plt.figure()
+gs = GridSpec(N_points+1, 1, height_ratios=[N_points] + [1 for _ in range(N_points)])
+ax = fig.add_subplot(gs[0])
+ax.set_aspect('equal')
+for r in regions:
+    # Add some noise so locations in multiple regions don't overlap
+    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
+    plt.legend([f'Region {i}' for i in range(N_points)])
+for i, r_rf in enumerate(regional_rfs):
+    ax = fig.add_subplot(gs[i+1])
+    regional_baseline = np.median(r_rf, axis=(-1,-2))
+    plt.imshow(regional_baseline, vmin=-np.max(np.abs(regional_baseline)), vmax=np.max(np.abs(regional_baseline)), cmap='RdBu_r')
+
+# Pick one specific embedding, and plot it on the map
+fig = plt.figure();
+ax = plt.subplot(2,1,1)
+ax.set_aspect('equal')
+plt.xlim([-180,180])
+plt.ylim([-90,90])
+for r in regions:
+    # Add some noise so locations in multiple regions don't overlap
+    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
+    plt.legend([f'Region {i}' for i in range(N_points)])
+ax = plt.subplot(2,1,2)
+rf_to_plot = [0,38]
+for p_i, p in enumerate(points):
+    curr_dat = regional_rfs[p_i, rf_to_plot[0], rf_to_plot[1]]
+    plt.imshow(curr_dat,
+               extent=[loc[p,1]-20, loc[p,1]+20, loc[p,0]-20, loc[p,0]+20],
+               vmin=np.min(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]), 
+               vmax=np.max(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]),
+               cmap='Greys') # left right bottom top
+    ax.add_patch(Rectangle((loc[p,1]-20, loc[p,0]-20), 40, 40, 
+                           linewidth=2, edgecolor=colormaps['RdBu_r'](0.5 + 0.5*(np.mean(curr_dat) / np.max(np.abs(baseline)))), facecolor='none')) #xy, width height
+plt.xlim([-180,180])
+plt.ylim([-90,90])
+plt.title(f'{rf_to_plot[0]}, {rf_to_plot[1]}')
+
+### MAKE A BUNCH OF ILLUSTRATIVE PLOTS FOR PRESENTATION ###
+
+# Plot 5 example patches
+for i in range(5):
+    fig = plt.figure(figsize=(10,10))
+    gs = GridSpec(len(land_cover_names)+1, len(land_cover_names)+1)
+    for row in range(len(land_cover_names)+1):
+        for col in range(len(land_cover_names)+1):
+            if row == 0 and col > 0:
+                ax = fig.add_subplot(gs[row, col])
+                ax.imshow(np.array(emb_np[i][col-1]).reshape(1,1), 
+                          vmin=-0.5, vmax=0.5,
+                          cmap='RdBu_r')
+                ax.set_title(f'dim {col}')
+                ax.set_xticks([])
+                ax.set_yticks([])                
+            if col == 0 and row > 0:
+                ax = fig.add_subplot(gs[row, col])
+                ax.imshow(lc[i][row-1], 
+                          vmin=0, vmax=1,
+                          cmap='Greys')
+                ax.set_ylabel(land_cover_names[row-1])
+                ax.set_xticks([])
+                ax.set_yticks([])
+            if col > 0 and row > 0:
+                ax = fig.add_subplot(gs[row, col])
+                ax.imshow(emb_np[i][col-1]*lc[i][row-1], 
+                          vmin=-0.5, vmax=0.5,
+                          cmap='RdBu_r')
+                ax.set_xticks([])
+                ax.set_yticks([])
+    plt.tight_layout()
+    plt.savefig(f'../figs/jacob/rf_{i}.png')
+    plt.savefig(f'../figs/jacob/rf_{i}.pdf')
+
+# Plot all receptive fields
+fig = plt.figure(figsize=(10,10))
+gs = GridSpec(len(land_cover_names), len(land_cover_names))
+for row in range(len(land_cover_names)):
+    for col in range(len(land_cover_names)):
+        ax = fig.add_subplot(gs[row, col])
+        ax.imshow(rf[row, col], 
+                    vmin=-np.max(np.abs(rf)), vmax=np.max(np.abs(rf)),
+                    cmap='RdBu_r')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if row == 0:
+            ax.set_title(f'dim {col}')
+        if col == 0:
+            ax.set_ylabel(land_cover_names[row-1])
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/rf_all.png')
+plt.savefig(f'../figs/jacob/rf_all.pdf')
+
+# Plot baselines
+plt.figure(figsize=(0.1*baseline.shape[1], 0.2*baseline.shape[0]));
+ax = plt.subplot(1,1,1)
+plt.imshow(baseline, 
+           vmin=-np.max(np.abs(rf)), vmax=np.max(np.abs(rf)),
+           cmap='RdBu_r')
+ax.set_xticks([])
+ax.set_yticks([])
+ax.set_xlabel('Embedding dimensions')
+ax.set_ylabel('Land covers')
+ax.set_aspect('equal')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/baseline.png')
+plt.savefig(f'../figs/jacob/baseline.pdf')
+
+# Quickly get a bunch of permuted baselines
+N_perms = 10
+perm_baselines = np.zeros((N_perms, baseline.shape[0], baseline.shape[1]))
+for p in tqdm.tqdm(range(N_perms)):
+    perm_rf = get_receptive_fields(emb_np[np.random.permutation(len(emb))], lc)
+    perm_baselines[p] = np.median(perm_rf, axis=(-1,-2))
+perm_baseline = np.mean(perm_baselines, axis=0)
+
+# Plot permuted baseline
+plt.figure(figsize=(0.1*baseline.shape[1], 0.2*baseline.shape[0]));
+ax = plt.subplot(1,1,1)
+plt.imshow(perm_baseline, 
+           vmin=-np.max(np.abs(rf)), vmax=np.max(np.abs(rf)),
+           cmap='RdBu_r')
+ax.set_xticks([])
+ax.set_yticks([])
+ax.set_xlabel('Embedding dimensions')
+ax.set_ylabel('Land covers')
+ax.set_aspect('equal')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/baseline_perm.png')
+plt.savefig(f'../figs/jacob/baseline_perm.pdf')
+# And replot for different scale, because these are just zeros
+plt.figure(figsize=(0.1*baseline.shape[1], 0.2*baseline.shape[0]));
+ax = plt.subplot(1,1,1)
+plt.imshow(perm_baseline, 
+           vmin=-np.max(np.abs(perm_baseline)), vmax=np.max(np.abs(perm_baseline)),
+           cmap='RdBu_r')
+ax.set_xticks([])
+ax.set_yticks([])
+ax.set_xlabel('Embedding dimensions')
+ax.set_ylabel('Land covers')
+ax.set_aspect('equal')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/baseline_perm_scale.png')
+plt.savefig(f'../figs/jacob/baseline_perm_scale.pdf')
+
+# Plot profiles beyond baseline
+fig = plt.figure(figsize=(10,10))
+gs = GridSpec(len(land_cover_names), len(land_cover_names))
+for row in range(len(land_cover_names)):
+    for col in range(len(land_cover_names)):
+        ax = fig.add_subplot(gs[row, col])
+        ax.imshow(rf[row, col], cmap='Greys')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for side in ['top', 'bottom', 'left', 'right']:
+            ax.spines[side].set_color(colormaps['RdBu_r'](0.5 + 0.5*(baseline[row, col] / np.max(np.abs(baseline)))))
+            ax.spines[side].set_linewidth(3)
+        if row == 0:
+            ax.set_title(f'dim {col}')
+        if col == 0:
+            ax.set_ylabel(land_cover_names[row-1])
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/rf_beyond_baseline.png')
+plt.savefig(f'../figs/jacob/rf_arf_beyond_baseline.pdf')
+
+# Illustrate peak score for two 1d examples
+x = np.linspace(0,1,100)
+y1 = norm.pdf(x, 0.5, 0.1) + 2*np.random.randn(len(x))
+y2 = norm.pdf(x, 0.5, 0.05) + 0.2*np.random.randn(len(x))
+base1 = np.median(y1)
+base2 = np.median(y2)
+mad1 = np.median(np.abs(y1 - base1))
+mad2 = np.median(np.abs(y2 - base2))
+peak1 = np.max(np.abs(y1 - base1))
+peak2 = np.max(np.abs(y2 - base2))
+for i, (curr_y, curr_base, curr_mad, curr_peak) in enumerate(zip([y1, y2], [base1, base2], [mad1, mad2], [peak1, peak2])):
+    plt.figure(figsize=(4,4))
+    plt.plot(x,curr_y, 'k-')
+    plt.plot(x,np.ones_like(x)*curr_base)
+    plt.plot(x,np.ones_like(x)*(curr_base + curr_mad))
+    plt.plot(x,np.ones_like(x)*(curr_base + curr_peak))
+    plt.legend(['Signal', 'Baseline', 'Baseline + MAD', 'Baseline + peak'])
+    plt.title(f'Peak score = {curr_peak / curr_mad:.2f}')
+    plt.savefig(f'../figs/jacob/peak_score_{i}.png')
+    plt.savefig(f'../figs/jacob/peak_score_{i}.pdf')    
+
+# Plot distribution of peak scores
+plt.figure(figsize=(4,4))
+x = np.linspace(peakyness.min(), peakyness.max(), 300)
+for color, label in zip(['blue', 'red'], ['noise', 'signal']):
+    i = signal_component if label == 'signal' else (1-signal_component)
+    mean = gmm.means_[i, 0]
+    std = np.sqrt(gmm.covariances_[i, 0, 0])
+    weight = gmm.weights_[i]
+    plt.plot(x, weight * norm.pdf(x, mean, std), color=color, label=label)
+plt.plot(peakyness.reshape(-1)[is_signal.reshape(-1)],np.zeros(np.sum(is_signal.reshape(-1))),  'rx')
+plt.plot(peakyness.reshape(-1)[~is_signal.reshape(-1)], np.zeros(np.sum(~is_signal.reshape(-1))), 'bx')
+plt.hist(peakyness.reshape(-1), bins=50, density=True, alpha=0.4, color='gray')
+plt.legend()
+plt.xlabel('Peak scores')
+plt.savefig(f'../figs/jacob/peak_dist.png')
+plt.savefig(f'../figs/jacob/peak_dist.pdf')    
+
+# Plot the "signal" receptive fields
+plt.figure(figsize=(25,5));
+for row, rf_row in enumerate(rf):
+    for col, rf_col in enumerate(rf_row):
+        if is_signal[row, col]:
+            ax = plt.subplot(rf.shape[0], rf.shape[1], row * rf.shape[1] + col + 1)
+            plt.imshow(rf_col,cmap='Greys')
+            plt.xticks([])
+            plt.yticks([])
+            for side in ['top', 'bottom', 'left', 'right']:
+                ax.spines[side].set_color(colormaps['RdBu_r'](0.5 + 0.5*(baseline[row, col] / np.max(np.abs(baseline)))))
+                ax.spines[side].set_linewidth(3)
+            plt.title(f'{row},{col}')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/rf_signal.png')
+plt.savefig(f'../figs/jacob/rf_signal.pdf')    
+
+# Highlight four examples
+examples = [[0,38], [8,5], [2,44], [5,42]]
+plt.figure(figsize=(2*len(examples),2))
+for i, e in enumerate(examples):
+    ax = plt.subplot(1, len(examples), i+1)
+    plt.imshow(rf[e[0], e[1]],cmap='Greys')
+    plt.xticks([])
+    plt.yticks([])
+    for side in ['top', 'bottom', 'left', 'right']:
+        ax.spines[side].set_color(colormaps['RdBu_r'](0.5 + 0.5*(baseline[e[0], e[1]] / np.max(np.abs(baseline)))))
+        ax.spines[side].set_linewidth(3)
+    plt.title(f'{land_cover_names[e[0]]}, dim {e[1]}')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/rf_signal_examples.png')
+plt.savefig(f'../figs/jacob/rf_signal_examples.pdf')    
+
+# Plot the sampled regions
+fig = plt.figure(figsize=(6,3))
+ax = plt.subplot(1,1,1)
+ax.set_aspect('equal')
+for r in regions:
+    # Add some noise so locations in multiple regions don't overlap
+    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
+    plt.legend([f'Region {i}' for i in range(N_points)])
+plt.xlim([-180, 180])
+plt.ylim([-90,90])
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/region_definition.png')
+plt.savefig(f'../figs/jacob/region_definition.pdf')  
+
+# Plot baseline for each region
+fig = plt.figure(figsize=(6, len(regional_rfs)))
+for i, r_rf in enumerate(regional_rfs):
+    ax = fig.add_subplot(len(regional_rfs), 1, i+1)
+    regional_baseline = np.median(r_rf, axis=(-1,-2))
+    plt.imshow(regional_baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
+    plt.xticks([])
+    plt.yticks([])
+    plt.ylabel(f'Region {i}')
+    if i == len(regional_rfs) - 1:
+        plt.xlabel('Embedding dimension')
+plt.tight_layout()
+plt.savefig(f'../figs/jacob/regional_baselines.png')
+plt.savefig(f'../figs/jacob/regional_baselines.pdf')  
+
+# Plot regional variability for four examples
+for i, rf_to_plot in enumerate(examples):
+    plt.figure(figsize=(6,3))
+    ax = plt.subplot(1,1,1)
+    ax.set_aspect('equal')
+    for p_i, p in enumerate(points):
+        for r in regions:
+            # Add some noise so locations in multiple regions don't overlap
+            curr_loc = loc[r] + np.random.randn(*loc[r].shape)
+            plt.plot(curr_loc[:,1], curr_loc[:,0], '.', zorder=1) # Flip lat, lon to lon, lat    
+        curr_dat = regional_rfs[p_i, rf_to_plot[0], rf_to_plot[1]]
+        plt.imshow(curr_dat,
+                extent=[loc[p,1]-20, loc[p,1]+20, loc[p,0]-20, loc[p,0]+20],
+                vmin=np.min(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]), 
+                vmax=np.max(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]),
+                cmap='Greys',
+                zorder=2) # left right bottom top
+        ax.add_patch(Rectangle((loc[p,1]-20, loc[p,0]-20), 40, 40, 
+                            linewidth=2, 
+                            edgecolor=colormaps['RdBu_r'](0.5 + 0.5*(np.median(curr_dat) / np.max(np.abs(baseline)))), 
+                            facecolor='none',
+                            zorder=3)) #xy, width height
+    plt.xlim([-180,180])
+    plt.ylim([-90,90])
+    plt.title(f'{land_cover_names[rf_to_plot[0]]}, dim {rf_to_plot[1]}')
+    plt.tight_layout()
+    plt.savefig(f'../figs/jacob/regional_examples_{p_i}.png')
+    plt.savefig(f'../figs/jacob/regional_examples_{p_i}.pdf')  
 
 ### FIT GAUSSIANS TO RECEPTIVE FIELDS ###
 
@@ -304,84 +581,6 @@ for row, rf_row in enumerate(rf):
                 ax.spines[side].set_linewidth(3)
             plt.title(f'{row},{col}')
 plt.tight_layout()
-
-### EXPLORE SPATIAL VARIATION IN AE EMBEDDING ###
-
-# Get longitude and latitude for all patches
-loc = np.stack([[lat, lon] for lon, lat, id in zip(gdf_points['lon'], gdf_points['lat'], gdf_points['id']) 
-                if id in emb['id'].to_numpy()])
-# Create a approximate distance matrix between all points
-# This is inaccurate but fast; geodesic would be better, but slow
-coords_rad = np.radians(loc)
-dist_matrix = haversine_distances(coords_rad)
-
-# Grab a bunch of points that are relatively far away from each other
-N_points = 10
-points = [np.random.randint(len(loc))]
-for i in range(N_points-1):
-    prev_dist = np.min(dist_matrix[points], axis=0)
-    new_point = np.argmax(prev_dist)
-    points.append(new_point)
-points = np.array(points)
-
-# Select regions around points
-region_size = 1000
-regions = []
-for p in points:
-    regions.append(np.argsort(dist_matrix[p])[:region_size])
-regions = np.array(regions)
-
-# Get regional receptive fields
-# Careful: I want to z-score *before* receptive field calculation,
-# otherwise I z-score regions differently
-region_lc = np.stack([zscore(lc[:,i,:,:]) for i in range(lc.shape[1])],axis=1)
-region_emb = zscore(emb_np, axis=0)
-regional_rfs = []
-for r in regions:
-    regional_rfs.append(get_receptive_fields(region_emb[r], region_lc[r], 
-                                             do_zscore_px=False, do_zscore_lc=False))
-regional_rfs = np.stack(regional_rfs)    
-
-# Plot regions, and baseline for each
-fig = plt.figure()
-gs = GridSpec(N_points+1, 1, height_ratios=[N_points] + [1 for _ in range(N_points)])
-ax = fig.add_subplot(gs[0])
-ax.set_aspect('equal')
-for r in regions:
-    # Add some noise so locations in multiple regions don't overlap
-    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
-    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
-    plt.legend([f'Region {i}' for i in range(N_points)])
-for i, r_rf in enumerate(regional_rfs):
-    ax = fig.add_subplot(gs[i+1])
-    baseline = np.mean(r_rf, axis=(-1,-2))
-    plt.imshow(baseline, vmin=-np.max(np.abs(baseline)), vmax=np.max(np.abs(baseline)), cmap='RdBu_r')
-
-# Pick one specific embedding, and plot it on the map
-fig = plt.figure();
-ax = plt.subplot(2,1,1)
-ax.set_aspect('equal')
-plt.xlim([-180,180])
-plt.ylim([-90,90])
-for r in regions:
-    # Add some noise so locations in multiple regions don't overlap
-    curr_loc = loc[r] + np.random.randn(*loc[r].shape)
-    plt.plot(curr_loc[:,1], curr_loc[:,0], '.') # Flip lat, lon to lon, lat    
-    plt.legend([f'Region {i}' for i in range(N_points)])
-ax = plt.subplot(2,1,2)
-rf_to_plot = [0,38]
-for p_i, p in enumerate(points):
-    curr_dat = regional_rfs[p_i, rf_to_plot[0], rf_to_plot[1]]
-    plt.imshow(curr_dat,
-               extent=[loc[p,1]-20, loc[p,1]+20, loc[p,0]-20, loc[p,0]+20],
-               vmin=np.min(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]), 
-               vmax=np.max(regional_rfs[:, rf_to_plot[0], rf_to_plot[1]]),
-               cmap='Greys') # left right bottom top
-    ax.add_patch(Rectangle((loc[p,1]-20, loc[p,0]-20), 40, 40, 
-                           linewidth=2, edgecolor=colormaps['RdBu_r'](0.5 + 0.5*(np.mean(curr_dat) / np.max(np.abs(baseline)))), facecolor='none')) #xy, width height
-plt.xlim([-180,180])
-plt.ylim([-90,90])
-plt.title(f'{rf_to_plot[0]}, {rf_to_plot[1]}')
 
 ### CALCULATE ALL RECEPTIVE FIELDS ###
 
