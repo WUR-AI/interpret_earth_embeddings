@@ -260,11 +260,13 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
 def get_modality_folders(parent_folder):
     '''Finds all recognised modality folders and load the points csv if it exists.'''
     assert os.path.exists(parent_folder), parent_folder
-    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'worldclimbio', 'dsm', 
+    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'dsm', 
                            'tessera', 'tessera_2024', 'geoclip', 'satclip']
     contents = {}
     df_points = None
     for f in os.listdir(parent_folder):
+        # if not os.path.isdir(os.path.join(parent_folder, f)):
+        #     continue
         if f in possible_modalities:
             if f == 'tessera_2024' and 'tessera' not in contents:
                 name = 'tessera'
@@ -395,6 +397,13 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     df = pd.read_csv(file_path)
     return df
 
+
+def flatten_list(xss):
+    # Source - https://stackoverflow.com/a/952952
+    # Posted by Alex Martelli, modified by community. See post 'Timeline' for change history
+    # Retrieved 2026-03-10, License - CC BY-SA 4.0
+    return [x for xs in xss for x in xs]
+
 def merge_modalities(parent_folder, sample_type='random_sample', 
                      modalities=['alphaearth', 'tessera', 'satclip', 'geoclip', 'bioclim', 'human_footprint'],
                      zscore_embeddings=False):
@@ -414,9 +423,11 @@ def merge_modalities(parent_folder, sample_type='random_sample',
 
     if zscore_embeddings:
         for m in modalities:
-            if m in geospatial_mods:
-                continue
+            # if m in geospatial_mods:
+            #     continue
             emb_cols = names[m]
             df_all[emb_cols] = df_all[emb_cols].apply(zscore)
+
+    names['all_geospatial'] = flatten_list([names[m] for m in geospatial_mods])
 
     return df_all, names
