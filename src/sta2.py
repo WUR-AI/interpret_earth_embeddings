@@ -499,8 +499,8 @@ for i, rf_to_plot in enumerate(examples):
     plt.ylim([-90,90])
     plt.title(f'{land_cover_names[rf_to_plot[0]]}, dim {rf_to_plot[1]}')
     plt.tight_layout()
-    plt.savefig(f'../figs/jacob/regional_examples_{p_i}.png')
-    plt.savefig(f'../figs/jacob/regional_examples_{p_i}.pdf')  
+    plt.savefig(f'../figs/jacob/regional_examples_{i}.png')
+    plt.savefig(f'../figs/jacob/regional_examples_{i}.pdf')  
 
 ### FIT GAUSSIANS TO RECEPTIVE FIELDS ###
 
@@ -566,21 +566,6 @@ plt.figure();
 for i in range(rf.shape[1]):
     plt.subplot(8, 8, i+1)
     plt.imshow(all_fits[lc_to_plot,i],cmap='RdBu_r')
-
-### EXPLORE RESPONSIVE EMBEDDINGS ###
-plt.figure();
-for row, rf_row in enumerate(rf):
-    for col, rf_col in enumerate(rf_row):
-        if not is_signal[row, col]:
-            ax = plt.subplot(rf.shape[0], rf.shape[1], row * rf.shape[1] + col + 1)
-            plt.imshow(rf_col,cmap='Greys')
-            plt.xticks([])
-            plt.yticks([])
-            for side in ['top', 'bottom', 'left', 'right']:
-                ax.spines[side].set_color(colormaps['RdBu_r'](0.5 + 0.5*(baseline[row, col] / np.max(np.abs(baseline)))))
-                ax.spines[side].set_linewidth(3)
-            plt.title(f'{row},{col}')
-plt.tight_layout()
 
 ### CALCULATE ALL RECEPTIVE FIELDS ###
 
