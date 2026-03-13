@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 N=20000        # max total points
-P=10           # number of processes
+P=20           # number of processes
 CHUNK=$((N / P))
 
 for ((i=0; i<P; i++)); do

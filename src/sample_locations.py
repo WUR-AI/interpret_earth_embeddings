@@ -11,36 +11,8 @@ sys.path.append('../content/')
 import ee, geemap
 import api_keys
 import data_utils as du
-ee.Authenticate()
-ee.Initialize(project=api_keys.GEE_API)
-geemap.ee_initialize()
-
-DW_CLASSES = [
-    "water", "trees", "grass", "flooded_vegetation",
-    "crops", "shrub_and_scrub", "built", "bare", "snow_and_ice",
-  ]
-
-def get_lc_from_coord(lat, lon, year=2024, buffer_m=20):
-    n_dw = len(DW_CLASSES)
-    point = ee.Geometry.Point([lon, lat])
-    aoi = point.buffer(buffer_m).bounds()
-    dw = (ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
-            .filterDate(f"{year}-01-01", f"{year}-12-31")
-            .mean()
-            )
-    samples = dw.sample(aoi, scale=10)
-    feat = samples.getInfo()['features']
-    n_feat = len(feat)
-    if n_feat == 0:
-        return None
-    else:
-        probs = np.zeros((n_feat, n_dw))
-        for i, f in enumerate(feat):
-            # label = f['properties']['label']
-            # assert type(label) == int and 0 <= label < n_dw, f'Unexpected label value: {label}'
-            probs[i, :] = np.array(list(f['properties'][cls] for cls in DW_CLASSES))
-        return feat, probs
-
+import gee_utils as gu
+from constants import DW_CLASSES
 
 def random_points_in_polygons(gdf, n):
     '''Sample random points within the given polygons.'''
@@ -82,7 +54,7 @@ def sample_dw_lc_uniformly(n=10000, save_every=100, year=2024, buffer_m=50,
     save_path = None 
 
     for it, (lat, lon) in enumerate(coords):
-        res = get_lc_from_coord(lat, lon, year=year, buffer_m=buffer_m)
+        res = gu.get_lc_from_coord(lat, lon, year=year, buffer_m=buffer_m)
         if res is not None:
             probs = res[1]
             probs_mean = probs.mean(axis=0)

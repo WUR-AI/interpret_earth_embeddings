@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import rasterio, rasterio.plot
+from sklearn.decomposition import PCA
 import xarray as xr
 import rioxarray as rxr
 from collections import Counter
@@ -215,6 +216,26 @@ def plot_overview_images(path_folder=path_dict['data_folder'], name='sample-0',
             plot_image_simple(im_plot_alpha[bands_alpha_plot, ...], ax=ax[ax_ind])
             ax[ax_ind].set_ylim(ax[ax_ind].get_ylim()[::-1])
             ax[ax_ind].set_title(f'AlphaEarth bands {bands_alpha_plot}')
+
+def plot_simple_overview_embeddings(hyp, ax=None, method='first_3_bands', bands=None):
+    if ax is None:
+        ax = plt.subplot(111)
+    assert method in ['first_3_bands', 'select_3_bands', 'pca'], "Unknown method for plotting overview of embeddings"
+    assert hyp.ndim == 3 and hyp.shape[1] == hyp.shape[2], "Hyp should be (bands, height, width)"
+    if method == 'first_3_bands':
+        hyp_plot = hyp[:3, ...]
+    elif method == 'select_3_bands':
+        assert bands is not None and len(bands) == 3, "Bands must be a list of 3 integers"
+        hyp_plot = hyp[bands, ...]
+    elif method == 'pca':
+        hyp_reshaped = hyp.reshape(hyp.shape[0], -1).T  # (pixels, bands)
+        pca = PCA(n_components=3)
+        hyp_pca = pca.fit_transform(hyp_reshaped)  # (pixels, 3)
+        hyp_plot = hyp_pca.T.reshape(3, hyp.shape[1], hyp.shape[2])  # (3, height, width)
+        # Normalize to [0, 1] for visualization
+        hyp_plot = (hyp_plot - hyp_plot.min()) / (hyp_plot.max() - hyp_plot.min())
+
+    ax.imshow(hyp_plot.transpose(1, 2, 0), interpolation='none')
 
 def plot_distr_embeddings(path_folder=path_dict['data_folder'], name='sample-0', verbose=0):
     (file_sent, file_alpha, file_dynamic, file_worldclimbio, file_dsm) = du.get_images_from_name(path_folder=path_folder, name=name)

@@ -7,6 +7,7 @@ Created on Thu Oct  9 12:20:07 2025
 """
 
 import data_utils as du
+import vis_utils as vu
 import numpy as np
 import os
 from matplotlib import pyplot as plt
@@ -339,7 +340,7 @@ plt.xlabel('Strongest hypothesis tuning')
 plt.ylabel('Nr of features')
 # Plot a strongly tuned example
 ax = plt.subplot(4,2,3);
-du.plot_image_simple(pictures[15], ax=ax)
+vu.plot_image_simple(pictures[15], ax=ax)
 plt.title('Sentinel')
 plt.subplot(4,2,4);
 plt.imshow(hypotheses[15][7])
@@ -372,7 +373,7 @@ plt.xlabel('Sta scale in pixels')
 plt.ylabel('Nr of stas')
 # Plot a short and long scale example
 ax = plt.subplot(4,2,3);
-du.plot_image_simple(pictures[4], ax=ax)
+vu.plot_image_simple(pictures[4], ax=ax)
 plt.title('Sentinel')
 plt.subplot(4,2,4);
 plt.imshow(hypotheses[4][1])
@@ -405,7 +406,7 @@ plt.xlabel('Sta displacement in pixels')
 plt.ylabel('Nr of stas')
 # Plot a short and long scale example
 ax = plt.subplot(4,2,3);
-du.plot_image_simple(pictures[7], ax=ax)
+vu.plot_image_simple(pictures[7], ax=ax)
 plt.title('Sentinel')
 plt.subplot(4,2,4);
 plt.imshow(hypotheses[7][2])
@@ -440,7 +441,7 @@ plt.xlabel('Sta eccentricity')
 plt.ylabel('Nr of stas')
 # Plot a short and long scale example
 ax = plt.subplot(4,2,3);
-du.plot_image_simple(pictures[55], ax=ax)
+vu.plot_image_simple(pictures[55], ax=ax)
 plt.title('Sentinel')
 plt.subplot(4,2,4);
 plt.imshow(hypotheses[55][0])
