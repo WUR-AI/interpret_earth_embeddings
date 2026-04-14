@@ -90,7 +90,6 @@ def create_timestamp(include_seconds=False):
         timestamp += ':' + str(dt.second).zfill(2)
     return timestamp
 
-
 def get_images_from_name(path_folder=path_dict['data_folder'], name='sample-0'):
     assert os.path.exists(path_folder), path_folder
     contents = [f for f in os.listdir(path_folder) if name == f.split('_')[0]]
@@ -397,12 +396,18 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     df = pd.read_csv(file_path)
     return df
 
-
 def flatten_list(xss):
     # Source - https://stackoverflow.com/a/952952
     # Posted by Alex Martelli, modified by community. See post 'Timeline' for change history
     # Retrieved 2026-03-10, License - CC BY-SA 4.0
     return [x for xs in xss for x in xs]
+
+def stack_col_names(names_dict, new_name: str, modalities_to_stack: list):
+    for m in modalities_to_stack:
+        assert m in names_dict, f'Modality {m} not found in names_dict.'
+    cols_to_stack = flatten_list([names_dict[m] for m in modalities_to_stack])
+    names_dict[new_name] = cols_to_stack
+    return names_dict
 
 def merge_modalities(parent_folder, sample_type='random_sample', 
                      modalities=['alphaearth', 'tessera', 'satclip', 'geoclip', 'bioclim', 'human_footprint'],
@@ -428,6 +433,12 @@ def merge_modalities(parent_folder, sample_type='random_sample',
             emb_cols = names[m]
             df_all[emb_cols] = df_all[emb_cols].apply(zscore)
 
-    names['all_geospatial'] = flatten_list([names[m] for m in geospatial_mods])
+    names = stack_col_names(names, 'all_geospatial', modalities_to_stack=geospatial_mods)
+    names = stack_col_names(names, 'all_gfm', modalities_to_stack=['alphaearth', 'tessera', 'satclip', 'geoclip'])
+
+    ordering_cols = ['dynamicworld', 'bioclim', 'human_footprint', 'alphaearth', 'tessera', 'satclip', 'geoclip', 'all_geospatial', 'all_gfm']
+    assert all([col in names for col in ordering_cols]), f"Not all ordering columns are in col_names. Missing: {[col for col in ordering_cols if col not in names]}"
+    assert all([col in ordering_cols for col in names]), f"Not all col_names are in ordering_cols. Missing: {[col for col in names if col not in ordering_cols]}"
+    names = {col: names[col] for col in ordering_cols}
 
     return df_all, names

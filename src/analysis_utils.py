@@ -1,3 +1,5 @@
+### Contains functions for tuning surfaces, PCA dimensionality, and CCA analyses between features and hypotheses.
+
 import os, sys, json 
 import numpy as np 
 import pandas as pd 
