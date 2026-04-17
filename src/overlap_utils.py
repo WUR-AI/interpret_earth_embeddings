@@ -3,14 +3,14 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
 import os
 from tqdm import tqdm
 import data_utils as du
 
 
 def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
-                       method='linear_regression', kwargs_for_method={}, verbose=0):
+                       method='regression', metric='r2', kwargs_for_method={}, verbose=0):
 
     if regressor_list is None:
         regressor_list = list(col_names.keys())
@@ -23,21 +23,33 @@ def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
     overlap_matrix = np.zeros((len(regressor_list), len(target_list)))
     if verbose > 0:
         print(f'There are {len(regressor_list)} regressors and {len(target_list)} targets. Total combinations: {len(regressor_list) * len(target_list)}.')
-    if method == 'linear_regression':
+    if method == 'regression':
         for i, regressor in enumerate(regressor_list):
             if verbose > 0:
                 print(f"Regressor: {regressor}. {i+1}/{len(regressor_list)}")
             for j, target in enumerate(target_list):
-                overlap_matrix[i, j], _, _ = get_r2_regression(df_all, col_names, regressor, target,
+                r2, mse, _, _ = get_r2_regression(df_all, col_names, regressor, target,
                                                                **kwargs_for_method)
+                if metric == 'r2':
+                    overlap_matrix[i, j] = r2
+                elif 'mse' in metric:
+                    overlap_matrix[i, j] = mse
+                else:
+                    raise ValueError(f'Metric {metric} not supported.')
     else:
         raise ValueError(f'Method {method} not supported.')
+    
+    if metric == 'mse_normalised':
+        overlap_matrix = overlap_matrix / np.max(overlap_matrix, axis=0, keepdims=True)  
+
     return overlap_matrix
 
-def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize_ambient_dim=False):
+def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize_ambient_dim=False,
+                      regression_method='ridge'):
     df_all = df_all.copy()
     data_regressor = df_all[col_names[regressor]].values
     data_target = df_all[col_names[target]].values
+    # print(f"Regressor: {regressor}, Target: {target}, Regressor shape: {data_regressor.shape}, Target shape: {data_target.shape}")
     assert data_regressor.shape[0] == data_target.shape[0]
     if equalize_ambient_dim and regressor != 'dynamicworld' and target != 'dynamicworld':
         if data_regressor.shape[1] > data_target.shape[1]:
@@ -47,7 +59,6 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
             pca = PCA(n_components=data_regressor.shape[1])
             data_target = pca.fit_transform(data_target)
         
-
     if n_splits > 1:
         rs = KFold(n_splits=n_splits, shuffle=True, random_state=0)
         mse_per_point = np.zeros(len(df_all))
@@ -55,26 +66,39 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
         Y_pred = np.zeros_like(data_target)
         for i, (train_index, test_index) in enumerate(rs.split(df_all)):
             
+            ## All samples x features
             X_train = data_regressor[train_index]
             Y_train = data_target[train_index]
             X_test = data_regressor[test_index]
             Y_test = data_target[test_index]
-        
-            # reg = LinearRegression().fit(X_train, Y_train)
-            reg = Ridge(alpha=1.0).fit(X_train, Y_train)
-            Y_pred[test_index] = reg.predict(X_test)
+            if regression_method == 'linear':
+                reg = LinearRegression().fit(X_train, Y_train)
+            elif regression_method == 'ridge':
+                reg = Ridge(alpha=1.0).fit(X_train, Y_train)
+            elif regression_method == 'truncated_svd':
+                reg = TruncatedSVD(n_components=min(X_train.shape[1], Y_train.shape[1]) - 1).fit(X_train, Y_train)
+            pred = reg.predict(X_test)
+            if len(pred.shape) == 1:
+                pred = pred[:, np.newaxis]
+            Y_pred[test_index] = pred
             mse_per_point[test_index] = np.mean((Y_test - Y_pred[test_index]) ** 2, axis=1)
         
     elif n_splits == 1:
         X = data_regressor
         Y = data_target
-        reg = LinearRegression().fit(X, Y)
+        if regression_method == 'linear':
+            reg = LinearRegression().fit(X, Y)
+        elif regression_method == 'ridge':
+            reg = Ridge(alpha=1.0).fit(X, Y)
+        elif regression_method == 'truncated_svd':
+            reg = TruncatedSVD(n_components=min(X.shape[1], Y.shape[1]) - 1).fit(X, Y)
         Y_pred = reg.predict(X)
         mse_per_point = np.mean((Y - Y_pred) ** 2, axis=1)
     r2 = r2_score(data_target, Y_pred)
+    mean_mse = np.mean(mse_per_point)
     residuals = data_target - Y_pred
     df_all[f'{regressor}_to_{target}_mse'] = mse_per_point
-    return np.mean(r2), df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals}
+    return np.mean(r2), mean_mse, df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals}
 
 def get_dim(im):
     assert im.shape[0] > im.shape[1], f'Number of samples {im.shape[0]} should be greater than number of features {im.shape[1]} for PCA to work properly.'
