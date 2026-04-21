@@ -1,5 +1,6 @@
 import data_utils as du
 import numpy as np
+from functools import reduce
 from matplotlib import pyplot as plt
 
 ### DEFINE UTILITIES ###
@@ -174,6 +175,23 @@ def cca(features_x, features_y):
   return np.linalg.norm(qx.T.dot(qy)) ** 2 / min(
       features_x.shape[1], features_y.shape[1])
 
+def rsa(features_x, features_y):
+   """Only function that's not taken from Kornblith et al.
+  Args:
+    features_x: A num_examples x num_features matrix of features.
+    features_y: A num_examples x num_features matrix of features.
+
+  Returns:
+    The similarity-of-similarities, i.e. the correlation between
+    the upper triangles of the example x example correlation matrices
+    for the both sets of features
+
+   """
+   cx = np.corrcoef(features_x)
+   cy = np.corrcoef(features_y)
+   upper_triangles = np.stack([m[np.triu_indices(features_x.shape[0],1)] for m in [cx, cy]])
+   return np.corrcoef(upper_triangles[:, np.sum(np.isnan(upper_triangles),axis=0)==0])[0,1]
+
 ### LOAD DATA ###
 
 # Initialise paths
@@ -194,30 +212,34 @@ common_samples = [reduce(np.intersect1d, ([s[i] for s in common_samples])) for i
 common_embeddings = [[e.set_index("id").loc[inc].reset_index(drop=True).to_numpy() for inc, e in zip(common_samples, emb)] for emb in embeddings]
 
 ### CALCULATE OVERLAP ###
+# Choose which sample to plot for (s=0: random; s=1: stratified)
+s = 0
+sim_cka = np.zeros((len(modalities), len(modalities)))
+sim_cca = np.zeros((len(modalities), len(modalities)))
+sim_rsa = np.zeros((len(modalities), len(modalities)))
 
-# The paper makes the point that cka_from_examples and cka_from_features should be identical,
-# but cka_from_features should be faster to compute if there are many examples
-# Here I include them both but there's really no reason to
-cka_from_examples = np.zeros((len(samples), len(modalities), len(modalities)))
-cka_from_features = np.zeros((len(samples), len(modalities), len(modalities)))
-cca_mean_squared_corrs = np.zeros((len(samples), len(modalities), len(modalities)))
+# Bit dumb to calculate all entries of symmetric matrices but whatever
+for i, e_from in enumerate(common_embeddings):
+    for j, e_to in enumerate(common_embeddings):
+        sim_cka[i, j] = feature_space_linear_cka(e_from[s], e_to[s])
+        sim_cca[i, j] = cca(e_from[s], e_to[s])
+        sim_rsa[i, j] = rsa(e_from[s], e_to[s])
+        print(f'Finished {i}, {j}')
 
-for s, sample in enumerate(samples):
-    for i, e_from in enumerate(common_embeddings):
-        for j, e_to in enumerate(common_embeddings):
-            cka_from_examples[s, i, j] = cka(gram_linear(e_from[s]), gram_linear(e_to[s]))
-            cka_from_features[s, i, j] = feature_space_linear_cka(e_from[s], e_to[s])
-            cca_mean_squared_corrs[s, i, j] = cca(e_from[s], e_to[s])
-            print(f'Finished {s}, {i}, {j}')
-
-plt.figure(figsize=(10,6))
-for row, sample in enumerate(samples):
-    for col, (data, method) in enumerate(zip(
-        [cka_from_examples, cka_from_features, cca_mean_squared_corrs],
-            ['cka_ex', 'cka_feat', 'cca'])):
-      plt.subplot(2, 3, row * 3 + col + 1)
-      plt.imshow(data[row], vmin=0, vmax=1)
-      plt.title(f'{method} \n {sample}')
-      plt.xticks(range(4), modalities, rotation=90)
-      plt.yticks(range(4), modalities)
-plt.tight_layout()
+# Plot results
+fig, axs = plt.subplots(1, 3, figsize=(6, 4), constrained_layout=True)
+ims = []
+for col, (ax, data, method) in enumerate(zip(
+    axs,
+    [sim_cka, sim_cca, sim_rsa],
+    ['cka', 'cca', 'rsa']
+)):
+    im = ax.imshow(data, vmin=0, vmax=1)
+    ims.append(im)
+    ax.set_title(method)
+    ax.set_xticks(range(4))
+    ax.set_xticklabels(modalities, rotation=90)
+    if col == 0:
+        ax.set_yticks(range(4))
+        ax.set_yticklabels(modalities)
+fig.colorbar(ims[0], ax=axs, location='right', shrink=0.5)
