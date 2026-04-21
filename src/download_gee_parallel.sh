@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-N=20000        # max total points
+N=4000        # max total points
 P=20           # number of processes
 CHUNK=$((N / P))
 
@@ -14,7 +14,7 @@ for ((i=0; i<P; i++)); do
     fi
 
     echo "Launching $START -> $END"
-    python download_gee_data.py --start $START --stop $END &
+    python download_gee_data_2.py --start $START --stop $END &
 done
 
 wait
