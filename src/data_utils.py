@@ -297,7 +297,7 @@ def get_list_complete_ids(parent_folder):
                 ids = ids.union(set(tmp.id.values))
         else:
             for f in os.listdir(folder):
-                if f.endswith('.tif') or f.endswith('.json'):
+                if (f.endswith('.tif') or f.endswith('.json')) and f[0] in '1234567890':
                     id = f.split('_')[0]
                     ids.add(int(id))
         list_ids_per_modality[modality] = ids
@@ -386,8 +386,7 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     
     assert os.path.exists(parent_folder), f'Parent folder {parent_folder} does not exist.'
     assert modality in os.listdir(parent_folder), f'Modality {modality} not found in {parent_folder}.'
-    assert sample_type in ['random_sample', 'lc_stratified_sample'], f'sample_type should be random_sample or lc_stratified_sample, got {sample_type}.'
-
+    
     folder = os.path.join(parent_folder, modality)
     assert os.path.exists(folder), f'Modality folder {folder} does not exist.'
     file_name = f'{sample_type}_{modality}.csv'
@@ -413,14 +412,33 @@ def merge_modalities(parent_folder, sample_type='random_sample',
                      modalities=['alphaearth', 'tessera', 'satclip', 'geoclip', 'bioclim', 'human_footprint'],
                      zscore_embeddings=False):
     
-    list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
-    cols_keep = ['id', 'lat', 'lon']
-    df_all = gdf_points[gdf_points[sample_type] == True][cols_keep + DW_CLASSES]
-    names = {'dynamicworld': DW_CLASSES}
-    geospatial_mods = ['dynamicworld', 'bioclim', 'human_footprint']
+    if sample_type in ['random_sample', 'lc_stratified_sample']:
+        list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
+        cols_keep = ['id', 'lat', 'lon']
+        df_all = gdf_points[gdf_points[sample_type] == True][cols_keep + DW_CLASSES]
+        names = {'dynamicworld': DW_CLASSES}
+        geospatial_mods = ['dynamicworld'] + [m for m in ['bioclim', 'human_footprint'] if m in modalities]
+
+    elif sample_type in ['biomass' , 'cropharvest']:
+        if sample_type == 'biomass':
+            file_task = 'biomass_cleaned_centre.csv'
+            cols_keep = ['index', 'biomass_mean', 'biomass_center']
+            names = {'biomass': ['biomass_mean', 'biomass_center']}
+            geospatial_mods = ['biomass']
+        elif sample_type == 'cropharvest':
+            file_task = 'cropharvest_cleaned_global_threshold-200-sample.csv'
+            cols_keep = ['index', 'label_name']
+            names = {'cropharvest': ['label_name']}
+            geospatial_mods = ['cropharvest']
+
+        gdf_points = pd.read_csv(os.path.join(parent_folder, 'downstream_tasks', file_task))
+        df_all = gdf_points[cols_keep]
+        df_all = df_all.rename(columns={'index': 'id'})
 
     for m in modalities:
         df_mod = load_csv_with_points(parent_folder, modality=m, sample_type=sample_type)
+        if 'index' in df_mod.columns:
+            df_mod = df_mod.rename(columns={'index': 'id'})
         if m not in geospatial_mods:
             df_mod = df_mod.rename(columns={col: f'{m}_{col}' for col in df_mod.columns if col != 'id'})
         names[m] = [col for col in df_mod.columns if col not in cols_keep]
@@ -428,15 +446,14 @@ def merge_modalities(parent_folder, sample_type='random_sample',
 
     if zscore_embeddings:
         for m in modalities:
-            # if m in geospatial_mods:
-            #     continue
             emb_cols = names[m]
             df_all[emb_cols] = df_all[emb_cols].apply(zscore)
 
     names = stack_col_names(names, 'all_geospatial', modalities_to_stack=geospatial_mods)
-    names = stack_col_names(names, 'all_gfm', modalities_to_stack=['alphaearth', 'tessera', 'satclip', 'geoclip'])
+    names = stack_col_names(names, 'all_gfm', modalities_to_stack=[m for m in modalities if m not in geospatial_mods])
 
-    ordering_cols = ['dynamicworld', 'bioclim', 'human_footprint', 'alphaearth', 'tessera', 'satclip', 'geoclip', 'all_geospatial', 'all_gfm']
+    ordering_cols = ['dynamicworld', 'bioclim', 'human_footprint', 'biomass', 'cropharvest', 'alphaearth', 'tessera', 'satclip', 'geoclip', 'all_geospatial', 'all_gfm']
+    ordering_cols = [col for col in ordering_cols if col in names]
     assert all([col in names for col in ordering_cols]), f"Not all ordering columns are in col_names. Missing: {[col for col in ordering_cols if col not in names]}"
     assert all([col in ordering_cols for col in names]), f"Not all col_names are in ordering_cols. Missing: {[col for col in names if col not in ordering_cols]}"
     names = {col: names[col] for col in ordering_cols}
