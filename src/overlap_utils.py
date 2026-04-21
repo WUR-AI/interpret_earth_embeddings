@@ -4,6 +4,7 @@ from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
 from sklearn.decomposition import PCA, TruncatedSVD
+from scipy.stats import zscore
 import os
 from tqdm import tqdm
 import data_utils as du
@@ -45,12 +46,17 @@ def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
     return overlap_matrix
 
 def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize_ambient_dim=False,
-                      regression_method='ridge'):
+                      regression_method='ridge', zscore_embeddings=False):
     df_all = df_all.copy()
     data_regressor = df_all[col_names[regressor]].values
     data_target = df_all[col_names[target]].values
     # print(f"Regressor: {regressor}, Target: {target}, Regressor shape: {data_regressor.shape}, Target shape: {data_target.shape}")
     assert data_regressor.shape[0] == data_target.shape[0]
+    if regression_method == 'ridge' and not zscore_embeddings:
+        print(f'Warning: It is recommended to z-score the embeddings when using ridge regression. Consider setting zscore_embeddings=True for better performance.')
+    if zscore_embeddings:
+        data_regressor = zscore(data_regressor, axis=0)
+        data_target = zscore(data_target, axis=0)
     if equalize_ambient_dim and regressor != 'dynamicworld' and target != 'dynamicworld':
         if data_regressor.shape[1] > data_target.shape[1]:
             pca = PCA(n_components=data_target.shape[1])
@@ -73,11 +79,17 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
             Y_test = data_target[test_index]
             if regression_method == 'linear':
                 reg = LinearRegression().fit(X_train, Y_train)
+                pred = reg.predict(X_test)
             elif regression_method == 'ridge':
                 reg = Ridge(alpha=1.0).fit(X_train, Y_train)
+                pred = reg.predict(X_test)
             elif regression_method == 'truncated_svd':
-                reg = TruncatedSVD(n_components=min(X_train.shape[1], Y_train.shape[1]) - 1).fit(X_train, Y_train)
-            pred = reg.predict(X_test)
+                pass
+                # svd = TruncatedSVD(n_components=64).fit(X_train, Y_train)
+                # weights = svd.transform(X_test)
+                # components = svd.components_
+                # X_test_pred = weights @ components
+                # print(pred.shape, Y_pred[test_index].shape)
             if len(pred.shape) == 1:
                 pred = pred[:, np.newaxis]
             Y_pred[test_index] = pred
@@ -91,7 +103,7 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
         elif regression_method == 'ridge':
             reg = Ridge(alpha=1.0).fit(X, Y)
         elif regression_method == 'truncated_svd':
-            reg = TruncatedSVD(n_components=min(X.shape[1], Y.shape[1]) - 1).fit(X, Y)
+            reg = TruncatedSVD(n_components=64).fit(X, Y)
         Y_pred = reg.predict(X)
         mse_per_point = np.mean((Y - Y_pred) ** 2, axis=1)
     r2 = r2_score(data_target, Y_pred)
