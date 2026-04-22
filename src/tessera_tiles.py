@@ -297,7 +297,7 @@ def fetch_tessera_tiles(
 
     # Send to workers
     _use_local_registry = os.path.exists(os.path.join(cache_dir, "registry.parquet"))
-    HEARTBEAT = 15  # seconds between "still fetching" log lines
+    HEARTBEAT = 45  # seconds between "still fetching" log lines
     TILE_TIMEOUT = 180  # seconds per record before the worker process is killed
 
     _pool_initargs = (cache_dir, _use_local_registry, str(cache_dir))

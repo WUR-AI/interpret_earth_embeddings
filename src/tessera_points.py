@@ -16,7 +16,7 @@ def _init_worker(cache_dir: str, use_local_registry: bool, registry_dir: str) ->
     global _process_gt
     socket.setdefaulttimeout(60)
     embeddings_dir = os.path.join(cache_dir, "raw_embeds")
-    gt_kwargs = {"verify_hashes": False, "embeddings_dir": embeddings_dir, "dataset_version": 'v1'}
+    gt_kwargs = {"embeddings_dir": embeddings_dir, "dataset_version": 'v1'}
     if use_local_registry:
         _process_gt = GeoTessera(registry_dir=registry_dir, **gt_kwargs)
     else:
@@ -34,6 +34,8 @@ def get_tessera_point_embeds(lon, lat, name_loc, year, tessera_con, output_csv):
     embed_df["id"] = name_loc
     with _csv_lock:
         embed_df.to_csv(output_csv, mode='a', header=not os.path.exists(output_csv))
+
+    print(f'DONE: {name_loc}')
 
 def _point_worker_fetch(args: tuple) -> str:
     """Multiprocessing worker — reuses the per-process GeoTessera instance."""
@@ -94,11 +96,24 @@ def fetch_tessera_points(dataset, data_dir, year, cache_dir, workers, retry_stuc
             if stuck_records:
                 print(f"Skipping {len(stuck_records)} previously-stuck record(s): {sorted(stuck_records)}")
 
+    # Deal with zeros files (records that returned all-zero embeddings)
+    zeros_file = os.path.join(save_dir, "tessera_points_zeros.txt")
+    zeros_records = set()
+    if os.path.exists(zeros_file):
+        with open(zeros_file, "r") as f:
+            zeros_records = set(line.strip() for line in f.readlines())
+            zeros_records = {int(x) for x in zeros_records}
+        if zeros_records:
+            print(f"Skipping {len(zeros_records)} previously-zero record(s)")
+            input_df = input_df[~input_df["index"].isin(zeros_records)]
+
     input_df = input_df[~input_df["index"].isin(stuck_records)]
+    # input_df = input_df[::-1][:1000]
+    # input_df = input_df[:-1000]
 
     # Send to workers
     _use_local_registry = os.path.exists(os.path.join(cache_dir, "registry.parquet"))
-    HEARTBEAT = 15  # seconds between "still fetching" log lines
+    HEARTBEAT = 60  # seconds between "still fetching" log lines
     TILE_TIMEOUT = 180  # seconds per record before the worker process is killed
 
     _pool_initargs = (cache_dir, _use_local_registry, str(cache_dir))
@@ -123,8 +138,11 @@ def fetch_tessera_points(dataset, data_dir, year, cache_dir, workers, retry_stuc
                         timed_out = True
                         break
                     print(f"  ... fetching {name_loc} ({elapsed}s)")
-                except NoDataError as exc:
-                    print(NoDataError)
+                except NoDataError:
+                    print(f"  NODATA ERROR fetching {name_loc}")
+                    with open(zeros_file, "a") as fh:
+                        fh.write(str(name_loc) + "\n")
+                    break
                 except Exception as exc:
                     print(f"  ERROR fetching {name_loc}: {exc}")
                     break
@@ -137,7 +155,7 @@ def fetch_tessera_points(dataset, data_dir, year, cache_dir, workers, retry_stuc
                     fh.write(str(name_loc) + "\n")
                 print(
                     f"  Stuck: {name_loc}  "
-                    f"lon={row.lon:.4f} lat={row.lat:.4f} year={int(row.year)}"
+                    f"lon={row.lon:.4f} lat={row.lat:.4f}"
                 )
 
             done += 1
