@@ -259,13 +259,13 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
 def get_modality_folders(parent_folder):
     '''Finds all recognised modality folders and load the points csv if it exists.'''
     assert os.path.exists(parent_folder), parent_folder
-    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'dsm', 
-                           'tessera', 'tessera_2024', 'geoclip', 'satclip']
+    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', #'dsm', 
+                           'tessera', 'tessera_2024', 'geoclip', 'satclip']#,
+                        #    'tessera_centre', 'alphaearth_centre', 'bioclim', 'human_footprint',
+                        #    'aux_geospatial']
     contents = {}
     df_points = None
     for f in os.listdir(parent_folder):
-        # if not os.path.isdir(os.path.join(parent_folder, f)):
-        #     continue
         if f in possible_modalities:
             if f == 'tessera_2024' and 'tessera' not in contents:
                 name = 'tessera'
@@ -279,7 +279,7 @@ def get_modality_folders(parent_folder):
                 print(f'Warning: Multiple files starting with dw_locations_ found in {parent_folder}, skipping {f}.')
                 continue
             df_points = pd.read_csv(os.path.join(parent_folder, f))
-        else:
+        elif os.path.isdir(os.path.join(parent_folder, f)):
             print(f'Warning: {f} in {parent_folder} is not a recognised modality folder, skipping.')
 
     return contents, df_points
@@ -292,10 +292,11 @@ def get_list_complete_ids(parent_folder):
         ids = set()
         if modality in ['satclip', 'geoclip']:
             csv_files = [x for x in os.listdir(folder) if x.endswith('.csv')]
+            csv_files = [f for f in csv_files if f.startswith('random_sample') or f.startswith('lc_stratified_sample')]
             for f in csv_files:
                 tmp = pd.read_csv(os.path.join(folder, f))
                 ids = ids.union(set(tmp.id.values))
-        else:
+        elif modality in ['alphaearth', 'tessera', 'dynamicworld', 'dsm']:
             for f in os.listdir(folder):
                 if (f.endswith('.tif') or f.endswith('.json')) and f[0] in '1234567890':
                     id = f.split('_')[0]
@@ -426,10 +427,12 @@ def merge_modalities(parent_folder, sample_type='random_sample',
             names = {'biomass': ['biomass_mean', 'biomass_center']}
             geospatial_mods = ['biomass']
         elif sample_type == 'cropharvest':
-            file_task = 'cropharvest_cleaned_global_threshold-200-sample.csv'
+            threshold = 200
+            file_task = f'cropharvest_cleaned_global_threshold-{threshold}-sample.csv'
             cols_keep = ['index', 'label_name']
             names = {'cropharvest': ['label_name']}
             geospatial_mods = ['cropharvest']
+            sample_type = f'cropharvest{threshold}'
 
         gdf_points = pd.read_csv(os.path.join(parent_folder, 'downstream_tasks', file_task))
         df_all = gdf_points[cols_keep]
