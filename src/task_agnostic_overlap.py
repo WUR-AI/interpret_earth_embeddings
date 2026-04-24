@@ -243,7 +243,11 @@ for col, (ax, data, method) in enumerate(zip(
     if col == 0:
         ax.set_yticks(range(4))
         ax.set_yticklabels(modalities)
+    else:
+       ax.set_yticks([])
 fig.colorbar(ims[0], ax=axs, location='right', shrink=0.5)
+plt.savefig(f'figs/jacob/overlap_measures.pdf')    
+plt.savefig(f'figs/jacob/overlap_measures.png')    
 
 ### CREATE OVERLAP MAPS ###
 
@@ -265,14 +269,17 @@ for p, dist in enumerate(dist_matrix):
     regions[p] = np.argsort(dist)[:region_size]
 
 # Just for illustration, plot a bunch of random regions in random colours
-plt.figure();
+plt.figure(figsize=(6,4));
 for r in regions[::100]:
    plt.scatter(loc[r,1], loc[r,0], color=np.random.rand(3))
 plt.xlim([-180,180])
 plt.ylim([-90,90])
 plt.xticks([])
 plt.yticks([])
+plt.gca().set_aspect('equal')
 plt.title('A bunch of random regions')
+plt.savefig(f'figs/jacob/overlap_regions.pdf')    
+plt.savefig(f'figs/jacob/overlap_regions.png')    
 
 # Calculate cka and rsa for each region
 # This time don't do feature-space cka, because there are more features than examples
@@ -289,7 +296,7 @@ for r, region in enumerate(regions):
     print(f'Finished region {r} / {len(regions)}')
 
 # Plot results
-for data in [region_cka]:
+for data, sim_type in zip([region_cka, region_rsa], ['cka', 'rsa']):
   fig = plt.figure(figsize=(12,6));
   for p, pair in enumerate(pairs):
     ax = plt.subplot(len(modalities)-1, len(modalities)-1, pair[0] * (len(modalities)-1) + (pair[1]-1) + 1)
@@ -300,4 +307,6 @@ for data in [region_cka]:
     plt.title(f'{modalities[pair[0]]}, {modalities[pair[1]]}')
     plt.xticks([])
     plt.yticks([])
+  plt.savefig(f'figs/jacob/overlap_{sim_type}_maps.pdf')    
+  plt.savefig(f'figs/jacob/overlap_{sim_type}_maps.png')    
   plt.tight_layout()
