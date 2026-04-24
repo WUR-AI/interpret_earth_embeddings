@@ -2,6 +2,7 @@ import data_utils as du
 import numpy as np
 from functools import reduce
 from matplotlib import pyplot as plt
+from sklearn.metrics.pairwise import haversine_distances
 
 ### DEFINE UTILITIES ###
 
@@ -243,3 +244,60 @@ for col, (ax, data, method) in enumerate(zip(
         ax.set_yticks(range(4))
         ax.set_yticklabels(modalities)
 fig.colorbar(ims[0], ax=axs, location='right', shrink=0.5)
+
+### CREATE OVERLAP MAPS ###
+
+# Show representational overlap localised around patches:
+# compute across a region of nearest neighbours for each patch
+# Get longitude and latitude for all patches
+locs = [gdf_points.set_index("id").loc[samp].reset_index(drop=True)[['lat', 'lon']].to_numpy() for samp in common_samples]
+loc = locs[s]
+
+# Create a approximate distance matrix between all points
+# This is inaccurate but fast; geodesic would be better, but slow
+coords_rad = np.radians(loc)
+dist_matrix = haversine_distances(coords_rad)
+
+# Select regions around points
+region_size = 100
+regions = np.zeros((len(loc), region_size), dtype=int)
+for p, dist in enumerate(dist_matrix):
+    regions[p] = np.argsort(dist)[:region_size]
+
+# Just for illustration, plot a bunch of random regions in random colours
+plt.figure();
+for r in regions[::100]:
+   plt.scatter(loc[r,1], loc[r,0], color=np.random.rand(3))
+plt.xlim([-180,180])
+plt.ylim([-90,90])
+plt.xticks([])
+plt.yticks([])
+plt.title('A bunch of random regions')
+
+# Calculate cka and rsa for each region
+# This time don't do feature-space cka, because there are more features than examples
+pairs = [[i, j] for i in range(0,len(modalities)) for j in range(i+1,len(modalities))]
+region_cka = np.zeros((len(loc), len(pairs)))
+region_rsa = np.zeros((len(loc), len(pairs)))
+for r, region in enumerate(regions):
+  for p, pair in enumerate(pairs):
+    region_cka[r, p] = cka(gram_linear(common_embeddings[pair[0]][s][region]), 
+                           gram_linear(common_embeddings[pair[1]][s][region]))
+    region_rsa[r, p] = rsa(common_embeddings[pair[0]][s][region], 
+                           common_embeddings[pair[1]][s][region])
+  if r % 100 == 0:
+    print(f'Finished region {r} / {len(regions)}')
+
+# Plot results
+for data in [region_cka]:
+  fig = plt.figure(figsize=(12,6));
+  for p, pair in enumerate(pairs):
+    ax = plt.subplot(len(modalities)-1, len(modalities)-1, pair[0] * (len(modalities)-1) + (pair[1]-1) + 1)
+    ax.set_aspect('equal')
+    plt.xlim([-180,180])
+    plt.ylim([-90,90])
+    plt.scatter(loc[:,1], loc[:,0], 2, np.concatenate([np.clip(data[:,p][:,None], 0, 1), np.zeros((len(data),2))], -1))
+    plt.title(f'{modalities[pair[0]]}, {modalities[pair[1]]}')
+    plt.xticks([])
+    plt.yticks([])
+  plt.tight_layout()
