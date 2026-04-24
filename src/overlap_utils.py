@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import LinearRegression, Ridge, LogisticRegression
 from sklearn.metrics import r2_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedShuffleSplit
 from sklearn.decomposition import PCA, TruncatedSVD
 from scipy.stats import zscore
 import os
@@ -37,6 +37,15 @@ def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
                     overlap_matrix[i, j] = mse
                 else:
                     raise ValueError(f'Metric {metric} not supported.')
+    elif method == 'classification':
+        for i, regressor in enumerate(regressor_list):
+            if verbose > 0:
+                print(f"Regressor: {regressor}. {i+1}/{len(regressor_list)}")
+            for j, target in enumerate(target_list):
+                acc, _ = get_accuracy_classification(df_all, col_names, regressor, target,
+                                                     **kwargs_for_method)
+                # print(f"Accuracy for regressor {regressor} and target {target}: {acc}. {kwargs_for_method}")
+                overlap_matrix[i, j] = acc
     else:
         raise ValueError(f'Method {method} not supported.')
     
@@ -110,7 +119,40 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
     mean_mse = np.mean(mse_per_point)
     residuals = data_target - Y_pred
     df_all[f'{regressor}_to_{target}_mse'] = mse_per_point
-    return np.mean(r2), mean_mse, df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals}
+    return np.mean(r2), mean_mse, df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals, 'mse_per_point': mse_per_point}
+
+def get_accuracy_classification(df_all, col_names, regressor, target: str, n_splits=4, 
+                                zscore_embeddings=False, method='logistic_regression'):
+    
+    assert type(target) == str, 'Target should be a string representing the column name in col_names.'
+    assert target in df_all.columns, f'Target {target} not found in df_all.'
+    assert n_splits > 1, 'n_splits should be greater than 1 for classification to work properly.'
+    data_regressor = df_all[col_names[regressor]].values
+    # print(f'nans: {np.isnan(data_regressor).sum()} out of {data_regressor.size} values in regressor {regressor}.')
+    # print(f'infs : {np.isinf(data_regressor).sum()} out of {data_regressor.size} values in regressor {regressor}.')
+    if zscore_embeddings:
+        data_regressor = zscore(data_regressor, axis=0)
+        
+    ## map target to integers
+    unique_classes = df_all[target].unique()
+    class_to_int = {cls: i for i, cls in enumerate(unique_classes)}
+    df_all[f'{target}_int'] = df_all[target].map(class_to_int)
+    data_target = df_all[f'{target}_int'].values
+
+    ## create stratified splits
+    sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=1 / n_splits, random_state=0)
+    accuracies = []
+    for train_index, test_index in sss.split(data_regressor, data_target):
+        X_train, X_test = data_regressor[train_index], data_regressor[test_index]
+        y_train, y_test = data_target[train_index], data_target[test_index]
+        if method == 'logistic_regression':
+            clf = LogisticRegression(max_iter=1000).fit(X_train, y_train)
+            acc = clf.score(X_test, y_test)
+            accuracies.append(acc)
+        else:
+            raise ValueError(f'Method {method} not supported.')
+    return np.mean(accuracies), accuracies
+
 
 def get_dim(im):
     assert im.shape[0] > im.shape[1], f'Number of samples {im.shape[0]} should be greater than number of features {im.shape[1]} for PCA to work properly.'
