@@ -442,3 +442,164 @@ def plot_overview_cca_reconstruction(features, X_hat_fit, X_res_fit, sentinel,
         cbar = plt.colorbar(mappable=ax[1].images[0], ax=ax[1], #fraction=0.046, pad=0.04, 
                             cax=ax[5], ticks=[-0.4, 0, 0.4])
         ax[5].set_ylabel('Embedding', rotation=270)
+
+def create_printable_table(df, save_table=False, filename=None,
+                           cols_drop = [], add_units=False, metric_type='percentage', rescale=True,
+                           folder_save='/Users/tplas/repos/ms_neureo/tables/',
+                           caption_tex=None, label_tex=None, position_tex='h',
+                           highlight_best_row=False, highlight_ranges=[(0, 4), (4, 10), (10, 11)],
+                           highlight_all_positive_values=False,
+                           print_index_rank=False, drop_columns_tex=[],
+                           sort_by_col=None, sort_ascending=True):
+    
+    assert metric_type in ['percentage', 'min_val', 'max_val'], f'Unknown metric type: {metric_type}'
+    ## Drop hparams with only one unique value (not relevant for comparison)
+    df_num_val = df.copy()  # this df will be reformatted, but maintain numeric values (while df_tex will be formatted as str for latex)
+    df_num_val = df_num_val.drop(columns=cols_drop)
+    cols_metrics = list(df_num_val.columns)
+    # ## compute mean and sem across seeds:
+    # if multiple_seeds:
+    #     assert col_seed in df_num_val.columns
+    #     assert df_num_val[col_seed].nunique() > 1
+    #     df_num_val = df_num_val.drop(columns=[col_seed])
+    # df_num_val = df_num_val.groupby(hparam_show).agg(['mean', 'sem'])  # mean and sem across seeds. With only one seed, sem is NaN
+
+    
+    ## Scale and format values
+    formatted_vals_dict = {}
+    col_renaming_dict = {}
+    scale_dict = {}
+    decimals_dict = {}
+    for m in cols_metrics:
+        if metric_type == 'percentage': #'Top-' in m:
+            if rescale:
+                scale = 100 
+            else:
+                scale = 1
+            if add_units:
+                new_name = m + ' [\%]'
+            else:
+                new_name = m
+            n_decimals = 1
+        elif metric_type in ['min_val', 'max_val']:    
+            max_val = df_num_val[m].max()
+            assert not np.isnan(max_val), f'Metric {m} has NaN values, cannot determine scale. Consider setting metric_type to "percentage" or adding units manually.'
+            ## scale so that first digit is before decimal point
+            if rescale:
+                scale = 10 ** -(int(np.log10(max_val)) - 1)
+            else:
+                scale = 1
+            n_decimals = 2
+            if scale == 1:
+                new_name = m 
+            else:   
+                new_name = m + f' [{1 / scale:.0e}]'
+        decimals_dict[m] = n_decimals
+        scale_dict[m] = scale
+        col_renaming_dict[m] = new_name
+        scaled_col = df_num_val[m] * scale
+        if n_decimals == 2:
+            formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.2f}')
+        elif n_decimals == 1:
+            formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.1f}')
+        else:
+            assert False, f'Unexpected number of decimals: {n_decimals}'
+    df_tex = pd.DataFrame(formatted_vals_dict)
+    df_tex = df_tex.reset_index()
+    df_num_val = df_num_val.reset_index()
+    
+    if metric_type in ['percentage', 'max_val']:
+        metrics_use_max = [x for x in list(df_num_val.columns)]
+        metrics_use_min = []
+    elif metric_type == 'min_val':
+        metrics_use_max = []
+        metrics_use_min = [x for x in list(df_num_val.columns)]
+
+    assert not (highlight_best_row and highlight_all_positive_values), "Cannot both highlight best row and all positive values, as they may conflict. Please choose one or the other."
+
+    if highlight_best_row:
+        for m in df_num_val.columns:
+            
+            if m == 'index':
+                continue
+            if highlight_ranges is None:
+                highlight_ranges = [(0, len(df_num_val))]
+            for hr in highlight_ranges:
+                if hr[1] - hr[0] == 1 and hr[1] == len(df_num_val):
+                    val = df_num_val[m].iloc[hr[0]]
+                    if m in metrics_use_max:
+                        if val < df_num_val[m].max():
+                            continue
+                    elif m in metrics_use_min:
+                        if val > df_num_val[m].min():
+                            continue
+                    best_row = hr[0]
+                else:                    
+                    if m in metrics_use_max:
+                        best_row = df_num_val[m].iloc[hr[0]:hr[1]].idxmax()
+                        if df_num_val[m].iloc[hr[0]:hr[1]].max() < df_num_val[m].iloc[:hr[1]].max():
+                            continue
+                        
+                    elif m in metrics_use_min:
+                        best_row = df_num_val[m].iloc[hr[0]:hr[1]].idxmin()
+                        if df_num_val[m].iloc[hr[0]:hr[1]].min() > df_num_val[m].iloc[:hr[1]].min():
+                            continue
+                new_val = '\\textbf{' + df_tex[col_renaming_dict[m]].loc[best_row] + '}'
+                df_tex.at[best_row, col_renaming_dict[m]] = new_val
+    
+    if highlight_all_positive_values:
+        for m in df_num_val.columns:
+            if m == 'index':
+                continue
+            best_rows = df_num_val[df_num_val[m] > 0].index
+            for br in best_rows:
+                new_val = '\\textbf{' + df_tex[col_renaming_dict[m]].loc[br] + '}'
+                df_tex.at[br, col_renaming_dict[m]] = new_val
+
+    # df_tex = df_tex.rename(columns=dict_rename_hparams)
+    for c in df_tex.columns:
+        if df_tex[c].dtype == 'float64' or df_tex[c].dtype == 'float32':
+            df_tex[c] = df_tex[c].apply(lambda x: str(x))
+       
+       
+    if len(drop_columns_tex) > 0:
+        df_tex = df_tex.drop(columns=drop_columns_tex)
+
+    ## Set all rounded "-0.0" to "0.0" for better readability
+    for c in df_tex.columns:
+        df_tex[c] = df_tex[c].replace('-0.' + '0' * n_decimals, '0.' + '0' * n_decimals)
+        df_tex[c] = df_tex[c].replace('\\textbf{0.' + '0' * n_decimals + '}', '0.' + '0' * n_decimals)
+
+    df_tex = df_tex.rename(columns={'index': 'Embeddings'})
+
+    # if sort_by_col is not None:
+    #     if sort_by_col in dict_rename_hparams.keys():
+    #         sort_by_col_tex = dict_rename_hparams[sort_by_col]
+    #         df_tex = df_tex.sort_values(by=sort_by_col_tex, ascending=sort_ascending).reset_index(drop=True)
+    #         df_num_val = df_num_val.sort_values(by=sort_by_col, ascending=sort_ascending).reset_index(drop=True)
+    #     else:
+    #         assert sort_by_col in df_num_val.columns, f'Column {sort_by_col} not in df_tex.columns'
+    #         df_tex = df_tex.reset_index(drop=True)
+    #         df_num_val = df_num_val.reset_index(drop=True)
+    #         inds_rows_sorted = np.argsort(df_num_val[sort_by_col]['mean'].values)
+    #         df_tex = df_tex.loc[inds_rows_sorted]
+    #         df_tex = df_tex.reset_index(drop=True)
+    #         df_num_val = df_num_val.loc[inds_rows_sorted]
+    #         df_num_val = df_num_val.reset_index(drop=True)
+
+    if print_index_rank:
+        ## make left most column 
+        cols_tex = df_tex.columns
+        df_tex['Rank'] = np.arange(len(df_tex)) + 1
+        df_tex = df_tex[['Rank'] + list(cols_tex)]
+
+    if save_table:
+        assert filename is not None, 'Filename not specified'
+        assert os.path.exists(folder_save), f'Folder {folder_save} does not exist'
+        assert filename.endswith('.tex'), f'Filename {filename} does not end with .tex'
+        path_save = os.path.join(folder_save, filename)
+        df_tex.to_latex(path_save, index=False, escape=False, na_rep='N/A',
+                caption=caption_tex, label=label_tex, position=position_tex)
+    else:
+        path_save = None
+    return df_num_val, df_tex, path_save
