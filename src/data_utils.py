@@ -259,7 +259,7 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
 def get_modality_folders(parent_folder):
     '''Finds all recognised modality folders and load the points csv if it exists.'''
     assert os.path.exists(parent_folder), parent_folder
-    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', #'dsm', 
+    possible_modalities = ['alphaearth', 'dynamicworld', #'dsm', 
                            'tessera', 'tessera_2024', 'geoclip', 'satclip']#,
                         #    'tessera_centre', 'alphaearth_centre', 'bioclim', 'human_footprint',
                         #    'aux_geospatial']
@@ -423,13 +423,13 @@ def merge_modalities(parent_folder, sample_type='random_sample',
     elif sample_type in ['biomass' , 'cropharvest']:
         if sample_type == 'biomass':
             file_task = 'biomass_cleaned_centre.csv'
-            cols_keep = ['index', 'biomass_mean', 'biomass_center']
+            cols_keep = ['index', 'lon', 'lat','biomass_mean', 'biomass_center']
             names = {'biomass': ['biomass_mean', 'biomass_center']}
             geospatial_mods = ['biomass']
         elif sample_type == 'cropharvest':
             threshold = 200
             file_task = f'cropharvest_cleaned_global_threshold-{threshold}-sample.csv'
-            cols_keep = ['index', 'label_name']
+            cols_keep = ['index', 'lon', 'lat', 'label_name']
             names = {'cropharvest': ['label_name']}
             geospatial_mods = ['cropharvest']
             sample_type = f'cropharvest{threshold}'
@@ -440,6 +440,7 @@ def merge_modalities(parent_folder, sample_type='random_sample',
 
     for m in modalities:
         df_mod = load_csv_with_points(parent_folder, modality=m, sample_type=sample_type)
+        print(m, len(df_mod))
         if 'index' in df_mod.columns:
             df_mod = df_mod.rename(columns={'index': 'id'})
         if m not in geospatial_mods:
