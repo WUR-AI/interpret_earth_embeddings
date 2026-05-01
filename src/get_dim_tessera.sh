@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --cpus-per-task=2
-#SBATCH --partition=cpu
 #SBATCH --gpus=0
 #SBATCH --job-name=neureo
 #SBATCH --mem=10G
