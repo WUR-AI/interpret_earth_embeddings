@@ -307,6 +307,56 @@ for data, sim_type in zip([region_cka, region_rsa], ['cka', 'rsa']):
     plt.title(f'{modalities[pair[0]]}, {modalities[pair[1]]}')
     plt.xticks([])
     plt.yticks([])
+  plt.tight_layout()
   plt.savefig(f'figs/jacob/overlap_{sim_type}_maps.pdf')    
   plt.savefig(f'figs/jacob/overlap_{sim_type}_maps.png')    
-  plt.tight_layout()
+
+### CALCULATE CORRELATION DISTANCES ###
+
+# Get correlation matrix across all pairs of samples
+s = 0
+all_corr_mats = np.stack([np.corrcoef(e[s]) for e in common_embeddings])
+
+# I want just the upper triangle, both for distance and correlation; add radius for dist in km
+dist_utri = dist_matrix[np.triu_indices(all_corr_mats.shape[-1],1)] * 6371.0
+all_corr_utri = np.stack([m[np.triu_indices(all_corr_mats.shape[-1],1)] for m in all_corr_mats])
+
+# I could just plot all points, i.e. dist vs corr, but there are order 10k^2 so it's too many
+# Instead, make a heatmap. Bin the space and count
+for dist_cutoff in [1000, 5000, np.max(dist_utri).astype(int)]:
+  include = dist_utri < dist_cutoff
+  all_corr_hist = [np.histogram2d(dist_utri[include], c[include], 
+                                  bins=100, range=[[0, np.max(dist_utri[include])], [-1,1]], 
+                                  density=True) for c in all_corr_utri]
+    
+  plt.figure(figsize=(6,4))
+  for e, (points, hist, name) in enumerate(zip(all_corr_utri, all_corr_hist, modalities)):
+      plt.subplot(2, len(modalities), e+1)
+      steps = int(np.sum(include)/1e5)
+      plt.plot(dist_utri[include][::steps], points[include][::steps], 'k.', markersize=1)
+      plt.xlim([hist[1][0], hist[1][-1]])
+      plt.ylim([hist[2][0], hist[2][-1]])
+      if e == 0:
+        plt.ylabel('Correlation')
+        plt.yticks([-1, 0, 1])
+      else:
+        plt.yticks([])
+      plt.xticks([])
+      plt.title(name)
+      plt.subplot(2,len(modalities), len(modalities) + e+1)
+      plt.imshow(hist[0].T,
+                interpolation='none',
+                origin='lower',
+                extent=[hist[1][0], hist[1][-1], hist[2][0], hist[2][-1]])    
+      plt.gca().set_aspect('auto')
+      if e == 0:
+        plt.ylabel('Correlation')
+        plt.yticks([-1, 0, 1])
+      else:
+        plt.yticks([])
+      plt.xticks(np.linspace(0, np.max(dist_utri[include]), 3), [f'{d/1000:0.1f}k' for d in np.linspace(0, np.max(dist_utri[include]), 3)])
+      plt.xlabel('Distance (km)')    
+      plt.tight_layout()
+      plt.savefig(f'figs/jacob/dist_corr_{dist_cutoff}.pdf')    
+      plt.savefig(f'figs/jacob/dist_corr_{dist_cutoff}.png')    
+
