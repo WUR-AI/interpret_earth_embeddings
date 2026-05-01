@@ -153,6 +153,12 @@ def get_accuracy_classification(df_all, col_names, regressor, target: str, n_spl
 
 def get_dim(im):
     assert im.shape[0] > im.shape[1], f'Number of samples {im.shape[0]} should be greater than number of features {im.shape[1]} for PCA to work properly.'
+    if np.isnan(im).sum() > 0:
+        print(f'Warning: There are {np.isnan(im).sum()} NaN values in the input data. PCA will not work properly with NaNs. Consider imputing or removing NaNs before calling get_dim.')
+        return np.nan, None
+    if np.isinf(im).sum() > 0:
+        print(f'Warning: There are {np.isinf(im).sum()} Inf values in the input data. PCA will not work properly with Infs. Consider imputing or removing Infs before calling get_dim.')
+        return np.nan, None
     pca = PCA(n_components=im.shape[1])
     pca.fit(im)
     sum_squares = np.sum(np.power(pca.explained_variance_, 2))
