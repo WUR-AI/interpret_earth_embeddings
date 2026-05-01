@@ -160,10 +160,17 @@ def get_dim(im):
     dim = float(square_sum / sum_squares)
     return dim, pca
 
-def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='alphaearth'):
+def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='alphaearth',
+                  save_results=False, dir_save=None):
+    if save_results:
+        assert dir_save is not None, 'If save_results is True, path_save should be provided.'
+        assert os.path.exists(dir_save) and os.path.isdir(dir_save), f'Directory {dir_save} does not exist.'
     list_ids, modality_folders, gdf_points = du.get_list_complete_ids(parent_folder)
+    assert modality in modality_folders, f'Modality {modality} not found in modality_folders. Available modalities: {list(modality_folders.keys())}.'
     if modality == 'alphaearth':
         suffix = '_alphaearth_y-2024.tif'
+    elif modality == 'tessera':
+        suffix = '_tessera_y-2024.tif'
     else:
         raise ValueError(f'Modality {modality} not supported.')
     dict_results = {x: [] for x in ['id', 'dim']}
@@ -176,7 +183,12 @@ def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='a
 
             dict_results['id'].append(int(id_patch))
             dict_results['dim'].append(dim)
-    return dict_results
+    df_results = pd.DataFrame(dict_results)
+    if save_results:
+        fname = f'{modality}_dims_{sample_type}.csv'
+        path_save = os.path.join(dir_save, fname)
+        df_results.to_csv(path_save, index=False)
+    return df_results
 
 def calculate_complementarity(df_scores, metric_type='mse', aggr='sum',
                               gfm_mod=['alphaearth', 'tessera', 'geoclip', 'satclip']):
