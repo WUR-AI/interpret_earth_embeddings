@@ -1,5 +1,7 @@
 import data_utils as du
 import numpy as np
+import os
+import tqdm
 from functools import reduce
 from matplotlib import pyplot as plt
 from sklearn.metrics.pairwise import haversine_distances
@@ -212,6 +214,11 @@ common_samples = [[e['id'].to_numpy() for e in emb] for emb in embeddings]
 common_samples = [reduce(np.intersect1d, ([s[i] for s in common_samples])) for i in range(len(samples))]
 common_embeddings = [[e.set_index("id").loc[inc].reset_index(drop=True).to_numpy() for inc, e in zip(common_samples, emb)] for emb in embeddings]
 
+# Load land cover data
+land_cover = [{id: du.load_tiff(os.path.join(data_folder, 'dynamicworld', f'{id}_dynamicworld_y-2024.tif'), datatype='np')
+               for id in tqdm.tqdm(s_id)} for s_id in common_samples]
+land_cover_names = [k for k in du.create_cmap_dynamic_world().keys()]
+
 ### CALCULATE OVERLAP ###
 # Choose which sample to plot for (s=0: random; s=1: stratified)
 s = 0
@@ -316,47 +323,56 @@ for data, sim_type in zip([region_cka, region_rsa], ['cka', 'rsa']):
 # Get correlation matrix across all pairs of samples
 s = 0
 all_corr_mats = np.stack([np.corrcoef(e[s]) for e in common_embeddings])
+# And get a similarity between land cover too
+lc_pix = np.stack([land_cover[s][i][:,64,64] for i in common_samples[s]]).transpose()
+lc_sim_mats = np.stack([1-np.abs(lc[:,None] - lc[None,:]) for lc in lc_pix])
 
 # I want just the upper triangle, both for distance and correlation; add radius for dist in km
 dist_utri = dist_matrix[np.triu_indices(all_corr_mats.shape[-1],1)] * 6371.0
 all_corr_utri = np.stack([m[np.triu_indices(all_corr_mats.shape[-1],1)] for m in all_corr_mats])
+lc_sim_utri = np.stack([m[np.triu_indices(lc_sim_mats.shape[-1],1)] for m in lc_sim_mats])
 
 # I could just plot all points, i.e. dist vs corr, but there are order 10k^2 so it's too many
-# Instead, make a heatmap. Bin the space and count
-for dist_cutoff in [1000, 5000, np.max(dist_utri).astype(int)]:
-  include = dist_utri < dist_cutoff
-  all_corr_hist = [np.histogram2d(dist_utri[include], c[include], 
-                                  bins=100, range=[[0, np.max(dist_utri[include])], [-1,1]], 
-                                  density=True) for c in all_corr_utri]
-    
-  plt.figure(figsize=(6,4))
-  for e, (points, hist, name) in enumerate(zip(all_corr_utri, all_corr_hist, modalities)):
-      plt.subplot(2, len(modalities), e+1)
-      steps = int(np.sum(include)/1e5)
-      plt.plot(dist_utri[include][::steps], points[include][::steps], 'k.', markersize=1)
-      plt.xlim([hist[1][0], hist[1][-1]])
-      plt.ylim([hist[2][0], hist[2][-1]])
-      if e == 0:
-        plt.ylabel('Correlation')
-        plt.yticks([-1, 0, 1])
-      else:
-        plt.yticks([])
-      plt.xticks([])
-      plt.title(name)
-      plt.subplot(2,len(modalities), len(modalities) + e+1)
-      plt.imshow(hist[0].T,
-                interpolation='none',
-                origin='lower',
-                extent=[hist[1][0], hist[1][-1], hist[2][0], hist[2][-1]])    
-      plt.gca().set_aspect('auto')
-      if e == 0:
-        plt.ylabel('Correlation')
-        plt.yticks([-1, 0, 1])
-      else:
-        plt.yticks([])
-      plt.xticks(np.linspace(0, np.max(dist_utri[include]), 3), [f'{d/1000:0.1f}k' for d in np.linspace(0, np.max(dist_utri[include]), 3)])
-      plt.xlabel('Distance (km)')    
-      plt.tight_layout()
-      plt.savefig(f'figs/jacob/dist_corr_{dist_cutoff}.pdf')    
-      plt.savefig(f'figs/jacob/dist_corr_{dist_cutoff}.png')    
-
+# Instead, plot as subsample of points and make a heatmap of all of them
+for sim_name, curr_sim, sim_lim, sim_names, sim_type in zip(
+  ['emb', 'lc'], [all_corr_utri, lc_sim_utri], [[-1,1],[0,1]], [modalities, land_cover_names], ['Correlation','1 - Abs Diff']):
+  # Plot at various distance cutoffs, which show the relevant scales
+  for dist_cutoff in [1000, 5000, np.max(dist_utri).astype(int)]:
+    include = dist_utri < dist_cutoff    
+    # Create a 2d histogram with similarity on y-ax and distance on x-ax
+    all_hist = [np.histogram2d(dist_utri[include], c[include], 
+                               bins=100, range=[[0, np.max(dist_utri[include])], sim_lim], 
+                               density=True) for c in curr_sim]
+      
+    plt.figure(figsize=(len(all_hist)*1.5,4))
+    for e, (points, hist, name) in enumerate(zip(curr_sim, all_hist, sim_names)):
+        # First subplot: scatter plot of subsampled pairs
+        plt.subplot(2, len(sim_names), e+1)
+        steps = int(np.sum(include)/1e4)
+        plt.plot(dist_utri[include][::steps], points[include][::steps], 'k.', markersize=1)
+        plt.xlim([hist[1][0], hist[1][-1]])
+        plt.ylim([hist[2][0], hist[2][-1]])
+        if e == 0:
+          plt.ylabel(sim_type)
+          plt.yticks(np.linspace(sim_lim[0], sim_lim[1], 3))
+        else:
+          plt.yticks([])
+        plt.xticks([])
+        plt.title(name)
+        # Second subplot: heatmap of log density
+        plt.subplot(2,len(sim_names), len(sim_names) + e+1)
+        plt.imshow(np.log(hist[0].T),
+                  interpolation='none',
+                  origin='lower',
+                  extent=[hist[1][0], hist[1][-1], hist[2][0], hist[2][-1]])    
+        plt.gca().set_aspect('auto')
+        if e == 0:
+          plt.ylabel(sim_type)
+          plt.yticks(np.linspace(sim_lim[0], sim_lim[1], 3))
+        else:
+          plt.yticks([])
+        plt.xticks(np.linspace(0, np.max(dist_utri[include]), 3), [f'{d/1000:0.1f}k' for d in np.linspace(0, np.max(dist_utri[include]), 3)])
+        plt.xlabel('Distance (km)')    
+        plt.tight_layout()
+        plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.pdf')    
+        plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.png')    
