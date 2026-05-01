@@ -174,7 +174,11 @@ def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='a
     else:
         raise ValueError(f'Modality {modality} not supported.')
     dict_results = {x: [] for x in ['id', 'dim']}
-    for id_patch in tqdm(list_ids):
+    it = 0
+    for id_patch in list_ids:
+        it += 1
+        if it % 100 == 0:
+            print(f'Processing patch {id_patch}. {it}/{len(list_ids)} patches processed.')
         path_modality = os.path.join(modality_folders[modality], f'{id_patch}{suffix}')
         if os.path.exists(path_modality):
             im = du.load_tiff(path_modality, datatype='np')

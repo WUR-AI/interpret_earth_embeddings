@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=8
 #SBATCH --gpus=0
 #SBATCH --job-name=neureo
 #SBATCH --mem=10G
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --output=logs/neureo_%j.out
 #SBATCH --error=logs/neureo_%j.err
 
