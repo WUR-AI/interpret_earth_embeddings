@@ -201,10 +201,12 @@ def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='a
     return df_results
 
 def calculate_complementarity(df_scores, metric_type='mse', aggr='sum',
-                              gfm_mod=['alphaearth', 'tessera', 'geoclip', 'satclip']):
+                              gfm_mod=['alphaearth', 'tessera', 'geoclip', 'satclip'],
+                              verbose=0):
     cols = list(df_scores.columns)
 
     df_compl = {col: [] for col in cols}
+    df_compl_and_model = {col: [] for col in cols}
     models = df_scores.index
 
     if metric_type == 'mse':
@@ -228,18 +230,28 @@ def calculate_complementarity(df_scores, metric_type='mse', aggr='sum',
             else:
                 raise ValueError(f'Model name {model} not recognized. Should be either a single model in gfm_mod, a combination of models separated by " +\n", or "All GFMs".')
             assert all(m in gfm_mod for m in models_in_combination), f'Models in combination {model} not all in gfm_mod.'
+            
             if metric_type == 'mse':
                 best_individual_score = min([dict_scores[m] for m in models_in_combination])
+                best_model = min(models_in_combination, key=lambda m: dict_scores[m])
+                if verbose > 0:
+                    print(f'Best model for {model} ({col}) is {best_model} with MSE {best_individual_score:.3f}. Combination score: {score:.3f}.')
             elif metric_type == 'r2':
                 best_individual_score = max([dict_scores[m] for m in models_in_combination])
+                best_model = max(models_in_combination, key=lambda m: dict_scores[m])
+                if verbose > 0:
+                    print(f'Best model for {model} ({col}) is {best_model} with R2 {best_individual_score:.3f}. Combination score: {score:.3f}.')
             compl = (score - best_individual_score) / (metric_best - best_individual_score) if metric_best != best_individual_score else 0
             df_compl[col].append(compl)
+            df_compl_and_model[col].append((compl, best_model))
             name_list.append(model)
+
     df_compl = pd.DataFrame(df_compl, index=name_list)
+    df_compl_and_model = pd.DataFrame(df_compl_and_model, index=name_list)
     if aggr == 'sum':
         df_compl['Sum'] = df_compl.sum(axis=1)
     elif aggr == 'mean':
         df_compl['Mean'] = df_compl.mean(axis=1)
-    return df_compl
+    return df_compl, df_compl_and_model
         
     
