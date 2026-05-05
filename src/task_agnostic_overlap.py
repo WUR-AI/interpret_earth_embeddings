@@ -3,9 +3,12 @@ import numpy as np
 import os
 import tqdm
 import scipy
+import re
 from functools import reduce
 from matplotlib import pyplot as plt
 from sklearn.metrics.pairwise import haversine_distances
+from statsmodels.stats.multitest import multipletests
+
 
 ### DEFINE UTILITIES ###
 
@@ -14,9 +17,6 @@ from sklearn.metrics.pairwise import haversine_distances
 # It's based on https://arxiv.org/pdf/1905.00414 and the accompanying demo
 # https://colab.research.google.com/github/google-research/google-research/blob/master/representation_similarity/Demo.ipynb
 # For now I'll just copy over their utility functions
-
-import numpy as np
-
 
 def gram_linear(x):
   """Compute Gram (kernel) matrix for a linear kernel.
@@ -327,7 +327,7 @@ all_corr_mats = np.stack([np.corrcoef(e[s]) for e in common_embeddings])
 # And get a similarity between land cover too
 lc_pix = np.stack([land_cover[s][i][:,64,64] for i in common_samples[s]]).transpose()
 lc_pix_z = (lc_pix - np.mean(lc_pix, axis=-1, keepdims=True)) / np.std(lc_pix, axis=-1, keepdims=True)
-lc_sim_mats = np.stack([1-np.abs(lc[:,None] - lc[None,:]) for lc in lc_pix])
+lc_sim_mats = np.stack([1-np.square(lc[:,None] - lc[None,:]) for lc in lc_pix])
 lc_weight_mats = np.stack([np.maximum(lc[:,None], lc[None,:]) for lc in lc_pix])
 
 # I want just the upper triangle, both for distance and correlation; add radius for dist in km
@@ -335,6 +335,9 @@ dist_utri = dist_matrix[np.triu_indices(all_corr_mats.shape[-1],1)] * 6371.0
 all_corr_utri = np.stack([m[np.triu_indices(all_corr_mats.shape[-1],1)] for m in all_corr_mats])
 lc_sim_utri = np.stack([m[np.triu_indices(lc_sim_mats.shape[-1],1)] for m in lc_sim_mats])
 lc_weight_utri = np.stack([m[np.triu_indices(lc_weight_mats.shape[-1],1)] for m in lc_weight_mats])
+
+# Store the fitted characteristic distances
+entropy_dist = []
 
 # I could just plot all points, i.e. dist vs corr, but there are order 10k^2 so it's too many
 # Instead, plot as subsample of points and make a heatmap of all of them
@@ -378,7 +381,9 @@ for sim_name, curr_sim, sim_lim, sim_names, sim_type, pair_weights in zip(
       ax2 = ax1.twinx()
       p = hist[0].T / np.sum(hist[0].T, axis=0, keepdims=True)
       entropy = -np.sum(p*np.log(np.clip(p, 1e-12, 1)), axis=0)
+      E = np.sum(p*hist[2][:-1][:,None], axis=0)
       ax2.plot(hist[1][:-1], entropy/np.max(entropy), 'r-')
+      ax2.plot(hist[1][:-1], E, 'k:')
       ax2.set_ylim([0,1])
       ax2.tick_params(axis="y", colors="red")
       ax2.spines["right"].set_color("red")            
@@ -387,10 +392,11 @@ for sim_name, curr_sim, sim_lim, sim_names, sim_type, pair_weights in zip(
         pars = scipy.optimize.curve_fit(lambda t,d: (entropy[0]/np.max(entropy)-1)*np.exp(-t/d)+1,  
                                         hist[1][:-1] / hist[1][-2],  
                                         entropy/np.max(entropy),
-                                        p0=100/hist[1][-2],
+                                        p0=[100/hist[1][-2]],
                                         maxfev=int(1e5)
                                         )[0]
-        ax2.plot(hist[1][:-1], (entropy[0]/np.max(entropy)-1)* np.exp(-hist[1][:-1] / (pars * hist[1][-2])) + 1, 'b:')        
+        ax2.plot(hist[1][:-1], (entropy[0]/np.max(entropy)-1)* np.exp(-hist[1][:-1] / (pars[0] * hist[1][-2])) + 1, 'b:')  
+        entropy_dist.append(pars[0]*hist[1][-1])      
         plt.title(label=f'd = {pars[0]*hist[1][-1]:.0f} km')
       # Annotate both axes
       ax1.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), [])
@@ -406,3 +412,69 @@ for sim_name, curr_sim, sim_lim, sim_names, sim_type, pair_weights in zip(
       plt.tight_layout()
       plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.pdf')    
       plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.png')    
+
+### FIND CORRELATION BETWEEN LC SCALE AND PERFORMANCE ###
+
+# Parse latex tables into numpy arrays (warning: LLM-generated)
+# Table 5: land-cover specific R2
+r2_scores = r"""
+\toprule
+Embeddings & \textit{Water} & \textit{Trees} & \textit{Grass} & \textit{Flood.} & \textit{Crops} & \textit{Shrub} & \textit{Built} & \textit{Bare} & \textit{Snow} \\
+\midrule
+alphaearth & \textbf{89.9 ± 0.4} & \textbf{70.8 ± 0.6} & 63.6 ± 0.9 & 35.1 ± 0.7 & 67.6 ± 0.6 & 56.0 ± 0.8 & \textbf{81.3 ± 0.6} & 92.0 ± 0.4 & 86.2 ± 0.5 \\
+tessera & 85.1 ± 0.8 & 65.9 ± 0.7 & \textbf{68.3 ± 0.9} & \textbf{37.1 ± 0.8} & \textbf{67.9 ± 0.7} & \textbf{56.2 ± 0.8} & 72.1 ± 0.6 & \textbf{92.0 ± 0.4} & \textbf{88.1 ± 0.5} \\
+geoclip & 4.3 ± 1.7 & 16.1 ± 0.9 & 25.5 ± 1.1 & 7.3 ± 0.9 & 25.8 ± 1.0 & 18.7 ± 1.2 & 19.1 ± 0.9 & 77.1 ± 1.1 & 83.6 ± 0.7 \\
+satclip & 8.2 ± 1.5 & 20.3 ± 1.1 & 31.5 ± 1.2 & 13.8 ± 0.7 & 32.0 ± 1.0 & 24.0 ± 1.3 & 19.2 ± 1.0 & 75.8 ± 1.0 & 80.5 ± 0.7 \\ \midrule
+\bottomrule
+"""
+# Table 6: land cover specific complementarity
+complementarity_scores = r"""
+\toprule
+Embeddings & \textit{Water} & \textit{Trees} & \textit{Grass} & \textit{Flood.} & \textit{Crops} & \textit{Shrub} & \textit{Built} & \textit{Bare} & \textit{Snow} \\
+\midrule
+alphaearth + tessera & \textbf{0.19**} & \textbf{0.15**} & \textbf{0.18**} & \textbf{0.11**} & \textbf{0.24**} & \textbf{0.18**} & \textbf{0.16**} & \textbf{0.22**} & \textbf{0.09**} \\
+alphaearth + geoclip & 0.00 & -0.01 & 0.02 & -0.01 & \textbf{0.04**} & 0.01 & 0.00 & 0.02 & \textbf{0.10**} \\
+alphaearth + satclip & \textbf{0.04**} & \textbf{0.04**} & \textbf{0.07**} & \textbf{0.03**} & \textbf{0.09**} & \textbf{0.07**} & \textbf{0.03**} & \textbf{0.08**} & \textbf{0.13**} \\
+tessera + geoclip & -0.03 & -0.02 & 0.02 & -0.02 & 0.02 & 0.01 & -0.03 & 0.01 & \textbf{0.07**} \\
+tessera + satclip & 0.00 & \textbf{0.03**} & \textbf{0.07**} & \textbf{0.02*} & \textbf{0.07**} & \textbf{0.06**} & 0.00 & \textbf{0.05**} & \textbf{0.09**} \\
+geoclip + satclip & -0.02 & -0.01 & 0.01 & -0.04 & -0.01 & 0.00 & 0.01 & \textbf{0.27**} & \textbf{0.11**} \\ \midrule
+All GFMs & \textbf{0.15**} & \textbf{0.12**} & \textbf{0.18**} & \textbf{0.07**} & \textbf{0.25**} & \textbf{0.17**} & \textbf{0.12**} & \textbf{0.23**} & \textbf{0.17**} \\
+\bottomrule"""
+
+def clean_cell(cell):
+    # remove LaTeX formatting
+    cell = re.sub(r'\\textbf\{([^}]*)\}', r'\1', cell)
+    cell = re.sub(r'\\textit\{([^}]*)\}', r'\1', cell)
+    # remove ± parts if present
+    cell = re.sub(r'±.*', '', cell)
+    # remove * or ** markers
+    cell = re.sub(r'\*+', '', cell)
+    return cell.strip()
+
+# Collect data and find correlation with land cover spatial scale
+r_dicts, p_vals = [], []
+for latex in [r2_scores, complementarity_scores]:
+  rows = []
+  for line in latex.splitlines():
+      line = line.strip()
+      if not line:
+          continue
+      # remove all LaTeX table commands anywhere in the line
+      line = re.sub(r'\\(toprule|midrule|bottomrule)', '', line)
+      # remove trailing \\ if present
+      line = line.replace('\\\\', '').strip()
+      if not line:
+          continue
+      cells = [clean_cell(c) for c in line.split('&')]
+      rows.append(cells)
+  header = rows[0]
+  data = rows[1:]
+  names = [row[0] for row in data]
+  values = np.array([[float(x) for x in row[1:]] for row in data])
+
+  # Calculate correlations with land cover spatial scale
+  r_dicts.append({n: scipy.stats.spearmanr(v, np.stack([e for e in entropy_dist[4:]]), alternative='greater') for n, v in zip(names,values)})
+  p_vals.append({n: v.pvalue for n,v in r_dicts[-1].items()})
+
+# Correct p-vals for multiple comparisons
+corr_p_vals = [{k: v for k, v in zip(ps.keys(), multipletests([v for v in ps.values()], method='fdr_bh')[1])} for ps in p_vals]
