@@ -2,9 +2,13 @@ import data_utils as du
 import numpy as np
 import os
 import tqdm
+import scipy
+import re
 from functools import reduce
 from matplotlib import pyplot as plt
 from sklearn.metrics.pairwise import haversine_distances
+from statsmodels.stats.multitest import multipletests
+
 
 ### DEFINE UTILITIES ###
 
@@ -13,9 +17,6 @@ from sklearn.metrics.pairwise import haversine_distances
 # It's based on https://arxiv.org/pdf/1905.00414 and the accompanying demo
 # https://colab.research.google.com/github/google-research/google-research/blob/master/representation_similarity/Demo.ipynb
 # For now I'll just copy over their utility functions
-
-import numpy as np
-
 
 def gram_linear(x):
   """Compute Gram (kernel) matrix for a linear kernel.
@@ -221,7 +222,7 @@ land_cover_names = [k for k in du.create_cmap_dynamic_world().keys()]
 
 ### CALCULATE OVERLAP ###
 # Choose which sample to plot for (s=0: random; s=1: stratified)
-s = 0
+s = 1
 sim_cka = np.zeros((len(modalities), len(modalities)))
 sim_cca = np.zeros((len(modalities), len(modalities)))
 sim_rsa = np.zeros((len(modalities), len(modalities)))
@@ -321,50 +322,39 @@ for data, sim_type in zip([region_cka, region_rsa], ['cka', 'rsa']):
 ### CALCULATE CORRELATION DISTANCES ###
 
 # Get correlation matrix across all pairs of samples
-s = 0
+s = 1
 all_corr_mats = np.stack([np.corrcoef(e[s]) for e in common_embeddings])
 # And get a similarity between land cover too
 lc_pix = np.stack([land_cover[s][i][:,64,64] for i in common_samples[s]]).transpose()
-lc_sim_mats = np.stack([1-np.abs(lc[:,None] - lc[None,:]) for lc in lc_pix])
+lc_pix_z = (lc_pix - np.mean(lc_pix, axis=-1, keepdims=True)) / np.std(lc_pix, axis=-1, keepdims=True)
+lc_sim_mats = np.stack([1-np.square(lc[:,None] - lc[None,:]) for lc in lc_pix])
+lc_weight_mats = np.stack([np.maximum(lc[:,None], lc[None,:]) for lc in lc_pix])
 
 # I want just the upper triangle, both for distance and correlation; add radius for dist in km
 dist_utri = dist_matrix[np.triu_indices(all_corr_mats.shape[-1],1)] * 6371.0
 all_corr_utri = np.stack([m[np.triu_indices(all_corr_mats.shape[-1],1)] for m in all_corr_mats])
 lc_sim_utri = np.stack([m[np.triu_indices(lc_sim_mats.shape[-1],1)] for m in lc_sim_mats])
+lc_weight_utri = np.stack([m[np.triu_indices(lc_weight_mats.shape[-1],1)] for m in lc_weight_mats])
 
-# For land cover, the similarity is currently a bit strange.
-# As there are 9 classes that sum to 1, the value for 1 class is generally near-0
-# So there will be lots of "similarity" between patches that have zeros
-# Instead, I'd like to know how land cover changes with distance from a high-value patch
-# So only include pairs where *one* of the pair is top 10% for that land cover
-lc_include_utri = []
-for lc in lc_pix:
-  # Find top for current lc
-  top10 = lc > np.percentile(lc, 90)
-  # Create inclusion matrix where at least one of the pair is in top10
-  include = ((np.ones_like(lc)[:,None] @ top10[None,:]) +  (top10[:,None] @ np.ones_like(lc)[None,:])) > 0
-  # Create inclusion matrix where both of the pair are in top10
-  #include = ((np.ones_like(lc)[:,None] @ top10[None,:]) * (top10[:,None] @ np.ones_like(lc)[None,:])) > 0  
-  # Append the upper triangle of the inclusion
-  lc_include_utri.append(include[np.triu_indices(lc_sim_mats.shape[-1],1)])
-lc_include_utri = np.stack(lc_include_utri)
+# Store the fitted characteristic distances
+entropy_dist = []
 
 # I could just plot all points, i.e. dist vs corr, but there are order 10k^2 so it's too many
 # Instead, plot as subsample of points and make a heatmap of all of them
-for sim_name, curr_sim, sim_lim, sim_names, sim_type, patches_include in zip(
+for sim_name, curr_sim, sim_lim, sim_names, sim_type, pair_weights in zip(
   ['emb', 'lc'], 
   [all_corr_utri, lc_sim_utri], 
   [[-1,1],[0,1]], 
   [modalities, land_cover_names], 
-  ['Correlation','1 - Abs Diff'],
-  [np.ones_like(all_corr_utri).astype(bool), lc_include_utri]):
+  ['Correlation','1 - Diff Sqrd'],
+  [np.ones_like(all_corr_utri), lc_weight_utri]):
   # Plot at various distance cutoffs, which show the relevant scales
-  for dist_cutoff in [1000, 5000, np.max(dist_utri).astype(int)]:
+  for dist_cutoff in [1000]:#, 5000, np.max(dist_utri).astype(int)]:
     plt.figure(figsize=(len(sim_names)*1.5,4))
-    for e, (points, include, name) in enumerate(zip(curr_sim, patches_include, sim_names)):
-      include = include & (dist_utri < dist_cutoff)
+    for e, (points, weights, name) in enumerate(zip(curr_sim, pair_weights, sim_names)):
+      include = dist_utri < dist_cutoff
       # Create a 2d histogram with similarity on y-ax and distance on x-ax
-      hist = np.histogram2d(dist_utri[include], points[include], 
+      hist = np.histogram2d(dist_utri[include], points[include], weights=weights[include], 
                             bins=100, range=[[0, np.max(dist_utri[include])], sim_lim], 
                             density=True)
       # First subplot: scatter plot of subsampled pairs
@@ -381,19 +371,110 @@ for sim_name, curr_sim, sim_lim, sim_names, sim_type, patches_include in zip(
       plt.xticks([])
       plt.title(name)
       # Second subplot: heatmap of log density
-      plt.subplot(2,len(sim_names), len(sim_names) + e+1)
-      plt.imshow(np.log(hist[0].T),
+      ax1 = plt.subplot(2,len(sim_names), len(sim_names) + e+1)
+      ax1.imshow(np.log(hist[0].T),
                 interpolation='none',
                 origin='lower',
-                extent=[hist[1][0], hist[1][-1], hist[2][0], hist[2][-1]])    
-      plt.gca().set_aspect('auto')
+                extent=[hist[1][0], hist[1][-1], hist[2][0], hist[2][-1]])   
+      ax1.set_aspect('auto')
+      # Plot the entropy on top
+      ax2 = ax1.twinx()
+      p = hist[0].T / np.sum(hist[0].T, axis=0, keepdims=True)
+      entropy = -np.sum(p*np.log(np.clip(p, 1e-12, 1)), axis=0)
+      # E = np.sum(p*hist[2][:-1][:,None], axis=0)
+      ax2.plot(hist[1][:-1], entropy/np.max(entropy), 'r-')
+      #ax2.plot(hist[1][:-1], E, 'k:')
+      ax2.set_ylim([0,1])
+      ax2.tick_params(axis="y", colors="red")
+      ax2.spines["right"].set_color("red")            
+      # Only for short distance cutoff: fit the entropy increase
+      if dist_cutoff < 2000:
+        pars = scipy.optimize.curve_fit(lambda t,d: (entropy[0]/np.max(entropy)-1)*np.exp(-t/d)+1,  
+                                        hist[1][:-1] / hist[1][-2],  
+                                        entropy/np.max(entropy),
+                                        p0=[100/hist[1][-2]],
+                                        maxfev=int(1e5)
+                                        )[0]
+        ax2.plot(hist[1][:-1], (entropy[0]/np.max(entropy)-1)* np.exp(-hist[1][:-1] / (pars[0] * hist[1][-2])) + 1, 'b:')  
+        entropy_dist.append(pars[0]*hist[1][-1])      
+        plt.title(label=f'd = {pars[0]*hist[1][-1]:.0f} km')
+      # Annotate both axes
+      ax1.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), [])
+      ax2.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), [])
       if e == 0:
-        plt.ylabel(sim_type)
-        plt.yticks(np.linspace(sim_lim[0], sim_lim[1], 3))
-      else:
-        plt.yticks([])
+        ax1.set_ylabel(sim_type)
+        ax1.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), np.linspace(sim_lim[0], sim_lim[1], 3))
+      if e == len(sim_names)-1:
+        ax2.set_ylabel('Entropy / Max Entropy', color='red')
+        ax2.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), np.linspace(sim_lim[0], sim_lim[1], 3))  
       plt.xticks(np.linspace(0, np.max(dist_utri[include]), 3), [f'{d/1000:0.1f}k' for d in np.linspace(0, np.max(dist_utri[include]), 3)])
       plt.xlabel('Distance (km)')    
       plt.tight_layout()
       plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.pdf')    
       plt.savefig(f'figs/jacob/dist_{sim_name}_{dist_cutoff}.png')    
+
+### FIND CORRELATION BETWEEN LC SCALE AND PERFORMANCE ###
+
+# Parse latex tables into numpy arrays (warning: LLM-generated)
+# Table 5: land-cover specific R2
+r2_scores = r"""
+\toprule
+Embeddings & \textit{Water} & \textit{Trees} & \textit{Grass} & \textit{Flood.} & \textit{Crops} & \textit{Shrub} & \textit{Built} & \textit{Bare} & \textit{Snow} \\
+\midrule
+alphaearth & \textbf{89.9 ± 0.4} & \textbf{70.8 ± 0.6} & 63.6 ± 0.9 & 35.1 ± 0.7 & 67.6 ± 0.6 & 56.0 ± 0.8 & \textbf{81.3 ± 0.6} & 92.0 ± 0.4 & 86.2 ± 0.5 \\
+tessera & 85.1 ± 0.8 & 65.9 ± 0.7 & \textbf{68.3 ± 0.9} & \textbf{37.1 ± 0.8} & \textbf{67.9 ± 0.7} & \textbf{56.2 ± 0.8} & 72.1 ± 0.6 & \textbf{92.0 ± 0.4} & \textbf{88.1 ± 0.5} \\
+geoclip & 4.3 ± 1.7 & 16.1 ± 0.9 & 25.5 ± 1.1 & 7.3 ± 0.9 & 25.8 ± 1.0 & 18.7 ± 1.2 & 19.1 ± 0.9 & 77.1 ± 1.1 & 83.6 ± 0.7 \\
+satclip & 8.2 ± 1.5 & 20.3 ± 1.1 & 31.5 ± 1.2 & 13.8 ± 0.7 & 32.0 ± 1.0 & 24.0 ± 1.3 & 19.2 ± 1.0 & 75.8 ± 1.0 & 80.5 ± 0.7 \\ \midrule
+\bottomrule
+"""
+# Table 6: land cover specific complementarity
+complementarity_scores = r"""
+\toprule
+Embeddings & \textit{Water} & \textit{Trees} & \textit{Grass} & \textit{Flood.} & \textit{Crops} & \textit{Shrub} & \textit{Built} & \textit{Bare} & \textit{Snow} \\
+\midrule
+alphaearth + tessera & \textbf{0.19**} & \textbf{0.15**} & \textbf{0.18**} & \textbf{0.11**} & \textbf{0.24**} & \textbf{0.18**} & \textbf{0.16**} & \textbf{0.22**} & \textbf{0.09**} \\
+alphaearth + geoclip & 0.00 & -0.01 & 0.02 & -0.01 & \textbf{0.04**} & 0.01 & 0.00 & 0.02 & \textbf{0.10**} \\
+alphaearth + satclip & \textbf{0.04**} & \textbf{0.04**} & \textbf{0.07**} & \textbf{0.03**} & \textbf{0.09**} & \textbf{0.07**} & \textbf{0.03**} & \textbf{0.08**} & \textbf{0.13**} \\
+tessera + geoclip & -0.03 & -0.02 & 0.02 & -0.02 & 0.02 & 0.01 & -0.03 & 0.01 & \textbf{0.07**} \\
+tessera + satclip & 0.00 & \textbf{0.03**} & \textbf{0.07**} & \textbf{0.02*} & \textbf{0.07**} & \textbf{0.06**} & 0.00 & \textbf{0.05**} & \textbf{0.09**} \\
+geoclip + satclip & -0.02 & -0.01 & 0.01 & -0.04 & -0.01 & 0.00 & 0.01 & \textbf{0.27**} & \textbf{0.11**} \\ \midrule
+All GFMs & \textbf{0.15**} & \textbf{0.12**} & \textbf{0.18**} & \textbf{0.07**} & \textbf{0.25**} & \textbf{0.17**} & \textbf{0.12**} & \textbf{0.23**} & \textbf{0.17**} \\
+\bottomrule"""
+
+def clean_cell(cell):
+    # remove LaTeX formatting
+    cell = re.sub(r'\\textbf\{([^}]*)\}', r'\1', cell)
+    cell = re.sub(r'\\textit\{([^}]*)\}', r'\1', cell)
+    # remove ± parts if present
+    cell = re.sub(r'±.*', '', cell)
+    # remove * or ** markers
+    cell = re.sub(r'\*+', '', cell)
+    return cell.strip()
+
+# Collect data and find correlation with land cover spatial scale
+r_dicts, p_vals = [], []
+for latex in [r2_scores, complementarity_scores]:
+  rows = []
+  for line in latex.splitlines():
+      line = line.strip()
+      if not line:
+          continue
+      # remove all LaTeX table commands anywhere in the line
+      line = re.sub(r'\\(toprule|midrule|bottomrule)', '', line)
+      # remove trailing \\ if present
+      line = line.replace('\\\\', '').strip()
+      if not line:
+          continue
+      cells = [clean_cell(c) for c in line.split('&')]
+      rows.append(cells)
+  header = rows[0]
+  data = rows[1:]
+  names = [row[0] for row in data]
+  values = np.array([[float(x) for x in row[1:]] for row in data])
+
+  # Calculate correlations with land cover spatial scale
+  r_dicts.append({n: scipy.stats.spearmanr(v, np.stack([e for e in entropy_dist[4:]]), alternative='greater') for n, v in zip(names,values)})
+  p_vals.append({n: v.pvalue for n,v in r_dicts[-1].items()})
+
+# Correct p-vals for multiple comparisons
+corr_p_vals = [{k: v for k, v in zip(ps.keys(), multipletests([v for v in ps.values()], method='fdr_bh')[1])} for ps in p_vals]
