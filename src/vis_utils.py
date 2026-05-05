@@ -443,12 +443,13 @@ def plot_overview_cca_reconstruction(features, X_hat_fit, X_res_fit, sentinel,
                             cax=ax[5], ticks=[-0.4, 0, 0.4])
         ax[5].set_ylabel('Embedding', rotation=270)
 
-def create_printable_table(df, save_table=False, filename=None,
+def create_printable_table(df, df_sem=None, save_table=False, filename=None,
                            cols_drop = [], add_units=False, metric_type='percentage', rescale=True,
                            folder_save='/Users/tplas/repos/ms_neureo/tables/',
                            caption_tex=None, label_tex=None, position_tex='h',
                            highlight_best_row=False, highlight_ranges=[(0, 4), (4, 10), (10, 11)],
                            highlight_all_positive_values=False,
+                           df_pvals=None, highlight_only_if_significant=True,
                            print_index_rank=False, drop_columns_tex=[],
                            sort_by_col=None, sort_ascending=True):
     
@@ -457,14 +458,14 @@ def create_printable_table(df, save_table=False, filename=None,
     df_num_val = df.copy()  # this df will be reformatted, but maintain numeric values (while df_tex will be formatted as str for latex)
     df_num_val = df_num_val.drop(columns=cols_drop)
     cols_metrics = list(df_num_val.columns)
-    # ## compute mean and sem across seeds:
-    # if multiple_seeds:
-    #     assert col_seed in df_num_val.columns
-    #     assert df_num_val[col_seed].nunique() > 1
-    #     df_num_val = df_num_val.drop(columns=[col_seed])
-    # df_num_val = df_num_val.groupby(hparam_show).agg(['mean', 'sem'])  # mean and sem across seeds. With only one seed, sem is NaN
+    if df_sem is not None:
+        df_sem = df_sem.copy()
+        df_sem = df_sem.drop(columns=cols_drop)
+        assert all(df_sem.columns == df_num_val.columns), "df_sem should have the same columns as df_num_val"
+        bool_sem = True
+    else:
+        bool_sem = False
 
-    
     ## Scale and format values
     formatted_vals_dict = {}
     col_renaming_dict = {}
@@ -498,12 +499,24 @@ def create_printable_table(df, save_table=False, filename=None,
         scale_dict[m] = scale
         col_renaming_dict[m] = new_name
         scaled_col = df_num_val[m] * scale
-        if n_decimals == 2:
-            formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.2f}')
-        elif n_decimals == 1:
-            formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.1f}')
+
+        if bool_sem:
+            scaled_sem = df_sem[m] * scale
+            ## create formatted string with value and sem, e.g. "0.12 ± 0.03":
+            if n_decimals == 2:
+                formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.2f}') + ' ± ' + scaled_sem.apply(lambda x: f'{x:.2f}')
+            elif n_decimals == 1:
+                formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.1f}') + ' ± ' + scaled_sem.apply(lambda x: f'{x:.1f}')
         else:
-            assert False, f'Unexpected number of decimals: {n_decimals}'
+            if n_decimals == 2:
+                formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.2f}')
+            elif n_decimals == 1:
+                formatted_vals_dict[new_name] = scaled_col.apply(lambda x: f'{x:.1f}')
+            else:
+                assert False, f'Unexpected number of decimals: {n_decimals}'
+
+        
+        
     df_tex = pd.DataFrame(formatted_vals_dict)
     df_tex = df_tex.reset_index()
     df_num_val = df_num_val.reset_index()
@@ -517,6 +530,22 @@ def create_printable_table(df, save_table=False, filename=None,
 
     assert not (highlight_best_row and highlight_all_positive_values), "Cannot both highlight best row and all positive values, as they may conflict. Please choose one or the other."
 
+    if df_pvals is not None:
+        df_pvals = df_pvals.reset_index()
+        assert df_pvals.shape == df_num_val.shape, f"df_pvals should have the same shape as df_num_val: {df_pvals.shape} vs {df_num_val.shape}"
+        assert all(df_pvals.columns == df_num_val.columns), "df_pvals should have the same columns as df_num_val"
+        ## assert same set of indices and then sort pvals as num_val to ensure they are in the same order:
+        assert len(df_pvals['index']) == len(df_num_val['index']), f"df_pvals and df_num_val should have the same number of rows: {len(df_pvals['index'])} vs {len(df_num_val['index'])}"
+        for row in df_num_val['index']:
+            assert row in df_pvals['index'].values, f"Row {row} in df_num_val not found in df_pvals"
+        df_pvals = df_pvals.set_index('index').loc[df_num_val['index']].reset_index()  # sort pvals as num_val        
+        assert all(df_pvals['index'] == df_num_val['index']), "df_pvals should have the same index as df_num_val"
+        threshold_1star = 0.01 
+        threshold_2star = 0.001
+        bool_add_pval = True 
+    else:
+        bool_add_pval = False
+    
     if highlight_best_row:
         for m in df_num_val.columns:
             
@@ -544,23 +573,40 @@ def create_printable_table(df, save_table=False, filename=None,
                         best_row = df_num_val[m].iloc[hr[0]:hr[1]].idxmin()
                         if df_num_val[m].iloc[hr[0]:hr[1]].min() > df_num_val[m].iloc[:hr[1]].min():
                             continue
+                if highlight_only_if_significant and bool_add_pval:
+                    if df_pvals[m].iloc[best_row] >= threshold_1star:
+                        continue
                 new_val = '\\textbf{' + df_tex[col_renaming_dict[m]].loc[best_row] + '}'
                 df_tex.at[best_row, col_renaming_dict[m]] = new_val
     
+    if bool_add_pval:
+        for m in df_num_val.columns:
+            if m == 'index':
+                continue
+            for i_row in range(len(df_num_val)):
+                pval = df_pvals[m].iloc[i_row]
+                if pval < threshold_2star:
+                    new_val = df_tex[col_renaming_dict[m]].iloc[i_row] + '**'
+                    df_tex.at[i_row, col_renaming_dict[m]] = new_val
+                elif pval < threshold_1star:
+                    new_val = df_tex[col_renaming_dict[m]].iloc[i_row] + '*'
+                    df_tex.at[i_row, col_renaming_dict[m]] = new_val
+
     if highlight_all_positive_values:
         for m in df_num_val.columns:
             if m == 'index':
                 continue
             best_rows = df_num_val[df_num_val[m] > 0].index
             for br in best_rows:
+                if highlight_only_if_significant and bool_add_pval:
+                    if df_pvals[m].iloc[br] >= threshold_1star:
+                        continue
                 new_val = '\\textbf{' + df_tex[col_renaming_dict[m]].loc[br] + '}'
                 df_tex.at[br, col_renaming_dict[m]] = new_val
 
-    # df_tex = df_tex.rename(columns=dict_rename_hparams)
     for c in df_tex.columns:
         if df_tex[c].dtype == 'float64' or df_tex[c].dtype == 'float32':
             df_tex[c] = df_tex[c].apply(lambda x: str(x))
-       
        
     if len(drop_columns_tex) > 0:
         df_tex = df_tex.drop(columns=drop_columns_tex)
@@ -571,21 +617,6 @@ def create_printable_table(df, save_table=False, filename=None,
         df_tex[c] = df_tex[c].replace('\\textbf{0.' + '0' * n_decimals + '}', '0.' + '0' * n_decimals)
 
     df_tex = df_tex.rename(columns={'index': 'Embeddings'})
-
-    # if sort_by_col is not None:
-    #     if sort_by_col in dict_rename_hparams.keys():
-    #         sort_by_col_tex = dict_rename_hparams[sort_by_col]
-    #         df_tex = df_tex.sort_values(by=sort_by_col_tex, ascending=sort_ascending).reset_index(drop=True)
-    #         df_num_val = df_num_val.sort_values(by=sort_by_col, ascending=sort_ascending).reset_index(drop=True)
-    #     else:
-    #         assert sort_by_col in df_num_val.columns, f'Column {sort_by_col} not in df_tex.columns'
-    #         df_tex = df_tex.reset_index(drop=True)
-    #         df_num_val = df_num_val.reset_index(drop=True)
-    #         inds_rows_sorted = np.argsort(df_num_val[sort_by_col]['mean'].values)
-    #         df_tex = df_tex.loc[inds_rows_sorted]
-    #         df_tex = df_tex.reset_index(drop=True)
-    #         df_num_val = df_num_val.loc[inds_rows_sorted]
-    #         df_num_val = df_num_val.reset_index(drop=True)
 
     if print_index_rank:
         ## make left most column 

@@ -4,11 +4,18 @@ from sklearn.linear_model import LinearRegression, Ridge, LogisticRegression
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold, StratifiedShuffleSplit
 from sklearn.decomposition import PCA, TruncatedSVD
-from scipy.stats import zscore
+from statsmodels.stats.multitest import multipletests
+from scipy.stats import zscore, wilcoxon
 import os
 from tqdm import tqdm
 import data_utils as du
 
+
+def cap_first_letter(s):
+    if len(s) > 0:
+        return s[0].upper() + s[1:]
+    else:
+        return s
 
 def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
                        method='regression', kwargs_for_method={}, verbose=0):
@@ -23,6 +30,8 @@ def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
 
     overlap_matrix_r2 = np.zeros((len(regressor_list), len(target_list)))
     overlap_matrix_mse = np.zeros((len(regressor_list), len(target_list)))
+    dict_mse_per_point = {}
+    dict_r2_per_split = {}
 
     if verbose > 0:
         print(f'There are {len(regressor_list)} regressors and {len(target_list)} targets. Total combinations: {len(regressor_list) * len(target_list)}.')
@@ -31,27 +40,30 @@ def get_overlap_matrix(df_all, col_names, regressor_list=None, target_list=None,
             if verbose > 0:
                 print(f"Regressor: {regressor}. {i+1}/{len(regressor_list)}")
             for j, target in enumerate(target_list):
-                r2, mse, _, __ = get_r2_regression(df_all, col_names, regressor, target,
+                r2, mse, _, tmp = get_r2_regression(df_all, col_names, regressor, target,
                                                                **kwargs_for_method)
                 overlap_matrix_r2[i, j] = r2
                 overlap_matrix_mse[i, j] = mse
-
+                dict_mse_per_point[(regressor, target)] = tmp['mse_per_point']
+                dict_r2_per_split[(regressor, target)] = tmp['r2_per_split']
     elif method == 'classification':
         for i, regressor in enumerate(regressor_list):
             if verbose > 0:
                 print(f"Regressor: {regressor}. {i+1}/{len(regressor_list)}")
             for j, target in enumerate(target_list):
-                acc, mse, _, __ = get_accuracy_classification(df_all, col_names, regressor, target,
+                acc, mse, _, tmp = get_accuracy_classification(df_all, col_names, regressor, target,
                                                                      **kwargs_for_method)
                 overlap_matrix_r2[i, j] = acc
                 overlap_matrix_mse[i, j] = mse
+                dict_mse_per_point[(regressor, target)] = tmp['mse_per_point']
+                dict_r2_per_split[(regressor, target)] = tmp['accuracy_per_split']
     else:
         raise ValueError(f'Method {method} not supported.')
     
     # if metric == 'mse_normalised':
         # overlap_matrix_mse = overlap_matrix_mse / np.max(overlap_matrix_mse, axis=0, keepdims=True)  
 
-    return overlap_matrix_r2, overlap_matrix_mse
+    return overlap_matrix_r2, overlap_matrix_mse, dict_mse_per_point, dict_r2_per_split
 
 def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize_ambient_dim=False,
                       regression_method='ridge', zscore_embeddings=False):
@@ -80,6 +92,7 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
     r2 = np.zeros(n_splits)
     Y_pred = np.zeros_like(data_target)
     var_target = np.var(data_target, axis=0)
+    r2_per_split = []
     # print(f'Variance of target {target}: {var_target}')
     for i, (train_index, test_index) in enumerate(rs.split(df_all)):
         
@@ -105,12 +118,13 @@ def get_r2_regression(df_all, col_names, regressor, target, n_splits=4, equalize
             pred = pred[:, np.newaxis]
         Y_pred[test_index] = pred
         mse_per_point[test_index] = np.mean((Y_test - Y_pred[test_index]) ** 2 / var_target, axis=1)
-        
+        r2_per_split.append(r2_score(Y_test, Y_pred[test_index], multioutput='variance_weighted'))
+    
     r2 = r2_score(data_target, Y_pred, multioutput='variance_weighted')
     mean_mse = np.mean(mse_per_point)
     residuals = data_target - Y_pred
     df_all[f'{regressor}_to_{target}_mse'] = mse_per_point
-    return np.mean(r2), mean_mse, df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals, 'mse_per_point': mse_per_point}
+    return r2, mean_mse, df_all, {'target': data_target, 'predictions': Y_pred, 'residuals': residuals, 'mse_per_point': mse_per_point, 'r2_per_split': r2_per_split}
 
 def get_accuracy_classification(df_all, col_names, regressor, target: str, n_splits=4, 
                                 zscore_embeddings=False, method='logistic_regression'):
@@ -131,24 +145,29 @@ def get_accuracy_classification(df_all, col_names, regressor, target: str, n_spl
     data_target = df_all[f'{target}_int'].values
 
     ## create stratified splits
-    sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=1 / n_splits, random_state=42)
+    rs = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     accuracies = []
     mse_per_point = np.zeros(len(df_all))
-    for train_index, test_index in sss.split(data_regressor, data_target):
+    # pred_all = np.zeros((len(df_all), len(unique_classes)))
+    pred_all = np.zeros(len(df_all), dtype=int)
+    for train_index, test_index in rs.split(data_regressor):
         X_train, X_test = data_regressor[train_index], data_regressor[test_index]
         y_train, y_test = data_target[train_index], data_target[test_index]
+        y_test_soft = np.zeros((len(y_test), len(unique_classes)))
+        for i_c, cc in enumerate(unique_classes):
+            y_test_soft[:, i_c] = (y_test == cc).astype(float)
         if method == 'logistic_regression':
             clf = LogisticRegression(max_iter=1000).fit(X_train, y_train)
             acc = clf.score(X_test, y_test)
             accuracies.append(acc)
             pred = clf.predict(X_test)
             mse_per_point[test_index] = np.nan
-            # print(pred.shape, y_test.shape, pred[:10], y_test[:10])
+            pred_all[test_index] = pred
         else:
             raise ValueError(f'Method {method} not supported.')
     df_all[f'{regressor}_to_{target}_mse'] = mse_per_point
     mean_mse = np.mean(mse_per_point)
-    return np.mean(accuracies), mean_mse, df_all, {'target': data_target, 'predictions': pred, 'mse_per_point': mse_per_point}
+    return np.mean(accuracies), mean_mse, df_all, {'target': data_target, 'predictions': pred_all, 'mse_per_point': mse_per_point, 'accuracy_per_split': accuracies}
 
 
 def get_dim(im):
@@ -199,6 +218,69 @@ def get_list_dims(parent_folder, sample_type='lc_stratified_sample', modality='a
         path_save = os.path.join(dir_save, fname)
         df_results.to_csv(path_save, index=False)
     return df_results
+
+def calculate_significance_table(dict_mse_per_point, rewrite_names=True, pval_only=True,
+                              gfm_mods=['alphaearth', 'tessera', 'geoclip', 'satclip'],
+                              verbose=0, plot_table='main_tasks', pval_correction_method='fdr_bh'):
+    models, targets = zip(*dict_mse_per_point.keys())
+    models = list(set(models))
+    targets = list(set(targets))
+
+    for m in models:
+        for t in targets:
+            assert (m, t) in dict_mse_per_point, f'Combination of GFM {m} and target {t} not found in dict_mse_per_point.'
+
+    dict_tests = {c: [] for c in targets}
+    for t in targets:
+        name_list = []
+        for model in models:
+            if model in gfm_mods:
+                continue 
+            elif model == 'all_gfm':
+                models_in_combination = gfm_mods
+            elif '_' in model:
+                models_in_combination = model.split('_')
+            else:
+                raise ValueError(f'Model name {model} not recognized. Should be either a single model in gfm_mods, a combination of models separated by " +\n", or "All GFMs".')
+            
+            mse_combination = dict_mse_per_point[(model, t)]
+            best_model = max(models_in_combination, key=lambda m: np.mean(dict_mse_per_point[(m, t)]))
+            mse_best_model = dict_mse_per_point[(best_model, t)]
+            if verbose > 0:
+                print(f'Best model for target {t} is {best_model} with mean MSE {np.mean(mse_best_model):.3f}. Combination: {model} with mean MSE {np.mean(mse_combination):.3f}.')
+            stat, p_value = wilcoxon(mse_combination, mse_best_model, alternative='greater')
+            if pval_only:
+                dict_tests[t].append(p_value)
+            else:
+                dict_tests[t].append((stat, p_value))
+            if model == 'all_gfm' and rewrite_names:
+                model_name = 'All GFMs'
+            elif '_' in model and rewrite_names:
+                model_name = model.replace('_', ' + ')
+            else:                
+                model_name = model
+            name_list.append(model_name)
+    df_tests = pd.DataFrame(dict_tests, index=name_list)
+    if rewrite_names:
+        if plot_table == 'main_tasks':
+            dict_task_names = {'label_name': 'Crops', 'biomass_mean': 'Biomass',
+                               'dynamicworld': 'Land cover', 'bioclim': 'Bioclimatic', 
+                                'pop_density': 'Pop.', 'meandist_road': 'Dist. road',
+                               }
+        elif plot_table == 'lc_classes':
+            dict_task_names = {k: r"\textit{" + cap_first_letter(k.split('_')[0]).replace('Flooded', 'Flood.') + '}' for k in ['water', 'trees', 'grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub', 'built', 'bare', 'snow_and_ice']}
+        df_tests = df_tests[list(dict_task_names.keys())]
+        df_tests.rename(columns=dict_task_names, inplace=True)
+
+    vals = df_tests.values.flatten()
+    if pval_correction_method is not None:
+        rejected, corrected, _, __ = multipletests(vals, method=pval_correction_method)
+        df_tests_corrected = pd.DataFrame(corrected.reshape(df_tests.shape), columns=df_tests.columns, index=df_tests.index)
+    else:
+        df_tests_corrected = None
+
+    return df_tests, df_tests_corrected
+
 
 def calculate_complementarity(df_scores, metric_type='mse', aggr='sum',
                               gfm_mod=['alphaearth', 'tessera', 'geoclip', 'satclip'],
