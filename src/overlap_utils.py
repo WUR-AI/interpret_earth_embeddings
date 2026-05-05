@@ -274,7 +274,8 @@ def calculate_significance_table(dict_mse_per_point, rewrite_names=True, pval_on
 
     vals = df_tests.values.flatten()
     if pval_correction_method is not None:
-        rejected, corrected, _, __ = multipletests(vals, method=pval_correction_method)
+        rejected, corrected, _, __ = multipletests(vals, method=pval_correction_method, alpha=0.05)
+        # corrected[~rejected] = 1.0
         df_tests_corrected = pd.DataFrame(corrected.reshape(df_tests.shape), columns=df_tests.columns, index=df_tests.index)
     else:
         df_tests_corrected = None

@@ -540,8 +540,9 @@ def create_printable_table(df, df_sem=None, save_table=False, filename=None,
             assert row in df_pvals['index'].values, f"Row {row} in df_num_val not found in df_pvals"
         df_pvals = df_pvals.set_index('index').loc[df_num_val['index']].reset_index()  # sort pvals as num_val        
         assert all(df_pvals['index'] == df_num_val['index']), "df_pvals should have the same index as df_num_val"
-        threshold_1star = 0.01 
-        threshold_2star = 0.001
+        threshold_1star = 0.05 
+        threshold_2star = 0.01
+        threshold_3star = 0.001
         bool_add_pval = True 
     else:
         bool_add_pval = False
@@ -585,7 +586,10 @@ def create_printable_table(df, df_sem=None, save_table=False, filename=None,
                 continue
             for i_row in range(len(df_num_val)):
                 pval = df_pvals[m].iloc[i_row]
-                if pval < threshold_2star:
+                if pval < threshold_3star:
+                    new_val = df_tex[col_renaming_dict[m]].iloc[i_row] + '***'
+                    df_tex.at[i_row, col_renaming_dict[m]] = new_val
+                elif pval < threshold_2star:
                     new_val = df_tex[col_renaming_dict[m]].iloc[i_row] + '**'
                     df_tex.at[i_row, col_renaming_dict[m]] = new_val
                 elif pval < threshold_1star:
