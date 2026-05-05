@@ -222,7 +222,7 @@ land_cover_names = [k for k in du.create_cmap_dynamic_world().keys()]
 
 ### CALCULATE OVERLAP ###
 # Choose which sample to plot for (s=0: random; s=1: stratified)
-s = 0
+s = 1
 sim_cka = np.zeros((len(modalities), len(modalities)))
 sim_cca = np.zeros((len(modalities), len(modalities)))
 sim_rsa = np.zeros((len(modalities), len(modalities)))
@@ -322,12 +322,12 @@ for data, sim_type in zip([region_cka, region_rsa], ['cka', 'rsa']):
 ### CALCULATE CORRELATION DISTANCES ###
 
 # Get correlation matrix across all pairs of samples
-s = 0
+s = 1
 all_corr_mats = np.stack([np.corrcoef(e[s]) for e in common_embeddings])
 # And get a similarity between land cover too
 lc_pix = np.stack([land_cover[s][i][:,64,64] for i in common_samples[s]]).transpose()
 lc_pix_z = (lc_pix - np.mean(lc_pix, axis=-1, keepdims=True)) / np.std(lc_pix, axis=-1, keepdims=True)
-lc_sim_mats = np.stack([1-np.square(lc[:,None] - lc[None,:]) for lc in lc_pix])
+lc_sim_mats = np.stack([1-np.abs(lc[:,None] - lc[None,:]) for lc in lc_pix])
 lc_weight_mats = np.stack([np.maximum(lc[:,None], lc[None,:]) for lc in lc_pix])
 
 # I want just the upper triangle, both for distance and correlation; add radius for dist in km
@@ -384,14 +384,14 @@ for sim_name, curr_sim, sim_lim, sim_names, sim_type, pair_weights in zip(
       ax2.spines["right"].set_color("red")            
       # Only for short distance cutoff: fit the entropy increase
       if dist_cutoff < 2000:
-        pars = scipy.optimize.curve_fit(lambda t,a,b,c: a*np.exp(b*t)+c,  
+        pars = scipy.optimize.curve_fit(lambda t,d: (entropy[0]/np.max(entropy)-1)*np.exp(-t/d)+1,  
                                         hist[1][:-1] / hist[1][-2],  
                                         entropy/np.max(entropy),
-                                        p0=[entropy[0]/np.max(entropy)-1,-5,1],
+                                        p0=100/hist[1][-2],
                                         maxfev=int(1e5)
                                         )[0]
-        ax2.plot(hist[1][:-1], pars[0] * np.exp(pars[1]* hist[1][:-1] / hist[1][-2]) + pars[2], 'b:')
-        plt.title(label=f'd = {-(1/pars[1]*hist[1][-1]):.0f} km')
+        ax2.plot(hist[1][:-1], (entropy[0]/np.max(entropy)-1)* np.exp(-hist[1][:-1] / (pars * hist[1][-2])) + 1, 'b:')        
+        plt.title(label=f'd = {pars[0]*hist[1][-1]:.0f} km')
       # Annotate both axes
       ax1.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), [])
       ax2.set_yticks(np.linspace(sim_lim[0], sim_lim[1], 3), [])
