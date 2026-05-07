@@ -37,7 +37,7 @@ def get_epsg_from_latlon(lat, lon):
 
 def create_aoi_from_coord_buffer(coords, buffer_m=1000):
     """Create an Earth Engine AOI (Geometry) from a coordinate and buffer in meters."""
-    point = shapely.geometry.Point(coords)
+    # point = shapely.geometry.Point(coords)
     point = ee.Geometry.Point(coords)
     aoi = point.buffer(buffer_m).bounds()
     assert aoi is not None

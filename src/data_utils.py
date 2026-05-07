@@ -90,7 +90,6 @@ def create_timestamp(include_seconds=False):
         timestamp += ':' + str(dt.second).zfill(2)
     return timestamp
 
-
 def get_images_from_name(path_folder=path_dict['data_folder'], name='sample-0'):
     assert os.path.exists(path_folder), path_folder
     contents = [f for f in os.listdir(path_folder) if name == f.split('_')[0]]
@@ -260,13 +259,13 @@ def load_all_data(path_folder='/Users/tplas/data/2025-10 neureo/pecl-100-subsamp
 def get_modality_folders(parent_folder):
     '''Finds all recognised modality folders and load the points csv if it exists.'''
     assert os.path.exists(parent_folder), parent_folder
-    possible_modalities = ['sentinel2', 'alphaearth', 'dynamicworld', 'dsm', 
-                           'tessera', 'tessera_2024', 'geoclip', 'satclip']
+    possible_modalities = ['alphaearth', 'dynamicworld', #'dsm', 
+                           'tessera', 'tessera_2024', 'geoclip', 'satclip']#,
+                        #    'tessera_centre', 'alphaearth_centre', 'bioclim', 'human_footprint',
+                        #    'aux_geospatial']
     contents = {}
     df_points = None
     for f in os.listdir(parent_folder):
-        # if not os.path.isdir(os.path.join(parent_folder, f)):
-        #     continue
         if f in possible_modalities:
             if f == 'tessera_2024' and 'tessera' not in contents:
                 name = 'tessera'
@@ -280,7 +279,7 @@ def get_modality_folders(parent_folder):
                 print(f'Warning: Multiple files starting with dw_locations_ found in {parent_folder}, skipping {f}.')
                 continue
             df_points = pd.read_csv(os.path.join(parent_folder, f))
-        else:
+        elif os.path.isdir(os.path.join(parent_folder, f)):
             print(f'Warning: {f} in {parent_folder} is not a recognised modality folder, skipping.')
 
     return contents, df_points
@@ -293,12 +292,13 @@ def get_list_complete_ids(parent_folder):
         ids = set()
         if modality in ['satclip', 'geoclip']:
             csv_files = [x for x in os.listdir(folder) if x.endswith('.csv')]
+            csv_files = [f for f in csv_files if f.startswith('random_sample') or f.startswith('lc_stratified_sample')]
             for f in csv_files:
                 tmp = pd.read_csv(os.path.join(folder, f))
                 ids = ids.union(set(tmp.id.values))
-        else:
+        elif modality in ['alphaearth', 'tessera', 'dynamicworld', 'dsm']:
             for f in os.listdir(folder):
-                if f.endswith('.tif') or f.endswith('.json'):
+                if (f.endswith('.tif') or f.endswith('.json')) and f[0] in '1234567890':
                     id = f.split('_')[0]
                     ids.add(int(id))
         list_ids_per_modality[modality] = ids
@@ -387,8 +387,7 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     
     assert os.path.exists(parent_folder), f'Parent folder {parent_folder} does not exist.'
     assert modality in os.listdir(parent_folder), f'Modality {modality} not found in {parent_folder}.'
-    assert sample_type in ['random_sample', 'lc_stratified_sample'], f'sample_type should be random_sample or lc_stratified_sample, got {sample_type}.'
-
+    
     folder = os.path.join(parent_folder, modality)
     assert os.path.exists(folder), f'Modality folder {folder} does not exist.'
     file_name = f'{sample_type}_{modality}.csv'
@@ -397,25 +396,53 @@ def load_csv_with_points(parent_folder, modality='alphaearth', sample_type='rand
     df = pd.read_csv(file_path)
     return df
 
-
 def flatten_list(xss):
     # Source - https://stackoverflow.com/a/952952
     # Posted by Alex Martelli, modified by community. See post 'Timeline' for change history
     # Retrieved 2026-03-10, License - CC BY-SA 4.0
     return [x for xs in xss for x in xs]
 
+def stack_col_names(names_dict, new_name: str, modalities_to_stack: list):
+    for m in modalities_to_stack:
+        assert m in names_dict, f'Modality {m} not found in names_dict.'
+    cols_to_stack = flatten_list([names_dict[m] for m in modalities_to_stack])
+    names_dict[new_name] = cols_to_stack
+    return names_dict
+
 def merge_modalities(parent_folder, sample_type='random_sample', 
                      modalities=['alphaearth', 'tessera', 'satclip', 'geoclip', 'bioclim', 'human_footprint'],
                      zscore_embeddings=False):
     
-    list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
-    cols_keep = ['id', 'lat', 'lon']
-    df_all = gdf_points[gdf_points[sample_type] == True][cols_keep + DW_CLASSES]
-    names = {'dynamicworld': DW_CLASSES}
-    geospatial_mods = ['dynamicworld', 'bioclim', 'human_footprint']
+    if sample_type in ['random_sample', 'lc_stratified_sample']:
+        list_ids, modality_folders, gdf_points = get_list_complete_ids(parent_folder)
+        cols_keep = ['id', 'lat', 'lon']
+        df_all = gdf_points[gdf_points[sample_type] == True][cols_keep + DW_CLASSES]
+        names = {'dynamicworld': DW_CLASSES}
+        geospatial_mods = ['dynamicworld'] + [m for m in ['bioclim', 'human_footprint'] if m in modalities]
+
+    elif sample_type in ['biomass' , 'cropharvest']:
+        if sample_type == 'biomass':
+            file_task = 'biomass_cleaned_centre.csv'
+            cols_keep = ['index', 'lon', 'lat','biomass_mean', 'biomass_center']
+            names = {'biomass': ['biomass_mean', 'biomass_center']}
+            geospatial_mods = ['biomass']
+        elif sample_type == 'cropharvest':
+            threshold = 200
+            file_task = f'cropharvest_cleaned_global_threshold-{threshold}-sample.csv'
+            cols_keep = ['index', 'lon', 'lat', 'label_name']
+            names = {'cropharvest': ['label_name']}
+            geospatial_mods = ['cropharvest']
+            sample_type = f'cropharvest{threshold}'
+
+        gdf_points = pd.read_csv(os.path.join(parent_folder, 'downstream_tasks', file_task))
+        df_all = gdf_points[cols_keep]
+        df_all = df_all.rename(columns={'index': 'id'})
 
     for m in modalities:
         df_mod = load_csv_with_points(parent_folder, modality=m, sample_type=sample_type)
+        print(m, len(df_mod))
+        if 'index' in df_mod.columns:
+            df_mod = df_mod.rename(columns={'index': 'id'})
         if m not in geospatial_mods:
             df_mod = df_mod.rename(columns={col: f'{m}_{col}' for col in df_mod.columns if col != 'id'})
         names[m] = [col for col in df_mod.columns if col not in cols_keep]
@@ -423,11 +450,16 @@ def merge_modalities(parent_folder, sample_type='random_sample',
 
     if zscore_embeddings:
         for m in modalities:
-            # if m in geospatial_mods:
-            #     continue
             emb_cols = names[m]
             df_all[emb_cols] = df_all[emb_cols].apply(zscore)
 
-    names['all_geospatial'] = flatten_list([names[m] for m in geospatial_mods])
+    names = stack_col_names(names, 'all_geospatial', modalities_to_stack=geospatial_mods)
+    names = stack_col_names(names, 'all_gfm', modalities_to_stack=[m for m in modalities if m not in geospatial_mods])
+
+    ordering_cols = ['dynamicworld', 'bioclim', 'human_footprint', 'biomass', 'cropharvest', 'alphaearth', 'tessera', 'satclip', 'geoclip', 'all_geospatial', 'all_gfm']
+    ordering_cols = [col for col in ordering_cols if col in names]
+    assert all([col in names for col in ordering_cols]), f"Not all ordering columns are in col_names. Missing: {[col for col in ordering_cols if col not in names]}"
+    assert all([col in ordering_cols for col in names]), f"Not all col_names are in ordering_cols. Missing: {[col for col in names if col not in ordering_cols]}"
+    names = {col: names[col] for col in ordering_cols}
 
     return df_all, names
